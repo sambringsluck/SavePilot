@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>zh_CN</string>
+    <key>CFBundleExecutable</key>
+    <string>SavePilot</string>
+    <key>CFBundleIdentifier</key>
+    <string>local.savepilot.app</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>SavePilot</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+	<string>0.7.6</string>
+    <key>CFBundleVersion</key>
+	<string>17</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+    <key>LSUIElement</key>
+    <false/>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSHumanReadableCopyright</key>
+    <string>SavePilot prototype</string>
+    <key>NSDesktopFolderUsageDescription</key>
+    <string>SavePilot 需要读取你保存到桌面的新文件，以在本机分析并推荐归档位置。</string>
+    <key>NSDocumentsFolderUsageDescription</key>
+    <string>SavePilot 需要读取文稿并在你确认后将文件移动到选定的归档目录。</string>
+    <key>NSDownloadsFolderUsageDescription</key>
+    <string>SavePilot 需要监测下载目录中新完成的文件，以提供整理建议。</string>
+    <key>NSNetworkVolumesUsageDescription</key>
+    <string>当你主动选择网络磁盘作为监听或归档位置时，SavePilot 需要访问该位置。</string>
+    <key>NSRemovableVolumesUsageDescription</key>
+    <string>当你主动选择外置磁盘作为监听或归档位置时，SavePilot 需要访问该位置。</string>
+</dict>
+</plist>
