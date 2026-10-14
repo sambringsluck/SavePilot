@@ -25,9 +25,15 @@ enum ContentExtractor {
         var metadata = baseMetadata(url: url, type: type)
         var kind = type?.localizedDescription ?? (ext.isEmpty ? "未知格式" : ext.uppercased())
 
-        if textExtensions.contains(ext), let text = readText(url) {
-            textParts.append(text)
-            signals.append("可读文本")
+        if textExtensions.contains(ext), let rawText = readText(url) {
+            if ["md", "markdown"].contains(ext) {
+                textParts.append(MarkdownContentNormalizer.normalize(rawText))
+                signals.append("Markdown正文")
+                kind = "Markdown 文档"
+            } else {
+                textParts.append(rawText)
+                signals.append("可读文本")
+            }
         } else if ext == "pdf", let result = await AdvancedExtractors.extractPDF(at: url) {
             textParts.append(result.text)
             signals.append(contentsOf: result.signals)
@@ -108,7 +114,7 @@ enum ContentExtractor {
     private static func readText(_ url: URL) -> String? {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? handle.close() }
-        let data = (try? handle.read(upToCount: 160_000)) ?? Data()
+        let data = (try? handle.read(upToCount: 512_000)) ?? Data()
         guard !data.isEmpty else { return nil }
         return String(data: data, encoding: .utf8)
             ?? String(data: data, encoding: .utf16)

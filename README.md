@@ -16,7 +16,7 @@ SavePilot 是一个原生 macOS 菜单栏应用：它识别正在发生的“保
 
 ## 智能分析能力
 
-- 文本与源码：按内容、文件名、UTType、语言和实体分析。
+- 文本与源码：按内容、文件名、UTType、语言和实体分析；Markdown 会剥离语法、YAML 头部及对话导出中的思考/工具调用记录，避免机器日志淹没正文。
 - PDF：提取原生文字；扫描页使用 Apple Vision OCR。
 - 图片：OCR、图像分类、条码/二维码、人脸数量及基础 EXIF 信息。
 - DOCX、PPTX、XLSX：直接解析 OpenXML 内容；Pages、其他文档继续使用 Spotlight 与 Quick Look 兜底。
@@ -61,9 +61,9 @@ SavePilot 使用两层方案：辅助功能只读识别保存窗口并提供落�
 需要 Swift 6 / Xcode Command Line Tools：
 
 ```bash
-chmod +x Scripts/build-app.sh Scripts/run-self-test.sh
-./Scripts/run-self-test.sh
-./Scripts/build-app.sh
+chmod +x scripts/build-app.sh scripts/run-self-test.sh
+./scripts/run-self-test.sh
+./scripts/build-app.sh
 open dist/SavePilot.app
 ```
 

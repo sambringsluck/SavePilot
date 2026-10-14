@@ -326,11 +326,14 @@ enum FolderKnowledgeIndex {
         }
         guard let handle = try? FileHandle(forReadingFrom: url) else { return "" }
         defer { try? handle.close() }
-        let data = (try? handle.read(upToCount: 120_000)) ?? Data()
-        return String(data: data, encoding: .utf8)
+        let data = (try? handle.read(upToCount: 512_000)) ?? Data()
+        let decoded = String(data: data, encoding: .utf8)
             ?? String(data: data, encoding: .utf16)
             ?? String(data: data, encoding: .isoLatin1)
             ?? ""
+        return ["md", "markdown"].contains(ext)
+            ? MarkdownContentNormalizer.normalize(decoded)
+            : decoded
     }
 
     private static func tokenCounts(_ text: String) -> [String: Int] {
