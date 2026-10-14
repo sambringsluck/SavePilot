@@ -16,7 +16,8 @@ struct SavePilotSelfTest {
         try testUnknownFormatSuggestion()
         try testFilenameStopWordsDoNotRoute()
         try testSystemDataExclusions()
-        print("SavePilot self-test: 9/9 passed")
+        try testMarkdownExportNormalization()
+        print("SavePilot self-test: 10/10 passed")
     }
 
     private static func testExistingFolderSuggestion() throws {
@@ -200,6 +201,27 @@ struct SavePilotSelfTest {
               FolderMonitor.shouldIgnore(path: photosLibraryInternal),
               !FolderMonitor.shouldIgnore(path: normalDocument)
         else { throw SelfTestError.failed("system data exclusion") }
+    }
+
+    private static func testMarkdownExportNormalization() throws {
+        let hidden = String(repeating: "irrelevant hidden token ", count: 12_000)
+        let markdown = """
+        ---
+        export: conversation
+        ---
+        # 金融数据问题讨论
+        **User**
+        请分析股票、债券与资产配置的风险收益关系。
+        {"type":"think","think":"\(hidden)"}
+        **Assistant**
+        投资组合应关注分散化、波动率、回撤和长期收益。
+        """
+        let normalized = MarkdownContentNormalizer.normalize(markdown)
+        guard normalized.contains("金融数据问题讨论"),
+              normalized.contains("投资组合应关注分散化"),
+              !normalized.contains("irrelevant hidden token"),
+              !normalized.contains("export: conversation")
+        else { throw SelfTestError.failed("markdown exported conversation normalization") }
     }
 
     private static func temporaryDirectory() throws -> URL {
