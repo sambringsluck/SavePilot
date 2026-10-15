@@ -25,6 +25,8 @@ struct FolderKnowledgeRecommendation: Sendable {
     let score: Double
     let margin: Double
     let evidenceTerms: [String]
+    let evidenceChannels: [String]
+    let confidence: Double
 }
 
 enum FolderKnowledgeIndex {
@@ -88,9 +90,10 @@ enum FolderKnowledgeIndex {
         }
         guard usable.count >= 2 else { return nil }
 
-        let queryCounts = tokenCounts(
-            "\(source.deletingPathExtension().lastPathComponent) \(content.summary) \(content.entities.joined(separator: " ")) \(String(content.text.prefix(8_000)))"
-        )
+        var queryCounts = tokenCounts(String(content.text.prefix(10_000)))
+        mergeCounts(tokenCounts(content.summary), into: &queryCounts, multiplier: 2)
+        mergeCounts(tokenCounts(content.entities.joined(separator: " ")), into: &queryCounts, multiplier: 2)
+        mergeCounts(tokenCounts(source.deletingPathExtension().lastPathComponent), into: &queryCounts, multiplier: 3)
         guard !queryCounts.isEmpty else { return nil }
 
         var documentFrequency: [String: Int] = [:]
@@ -108,7 +111,7 @@ enum FolderKnowledgeIndex {
 
         let sourceExtension = source.pathExtension.lowercased()
         let sourceNameTerms = Set(tokenCounts(source.deletingPathExtension().lastPathComponent).keys)
-        let ranked = usable.map { profile -> (FolderKnowledgeProfile, Double, [String]) in
+        let scored = usable.map { profile -> (FolderKnowledgeProfile, Double, Double, Double, Double, [String]) in
             var profileVector: [String: Double] = [:]
             for (term, weight) in profile.weights {
                 let idf = log((totalProfiles + 1) / (Double(documentFrequency[term, default: 1]) + 1)) + 1
@@ -128,39 +131,44 @@ enum FolderKnowledgeIndex {
                     / sqrt(Double(max(1, queryMembers.count * members.count)))
                 return max(current, edgeScore)
             }
-            var score = semanticScore * 0.74 + hypergraphScore * 0.26
             let pathTerms = Set(tokenCounts(
                 URL(fileURLWithPath: profile.path).pathComponents.suffix(2).joined(separator: " ")
             ).keys)
             let explicitPathOverlap = sourceNameTerms.intersection(pathTerms).count
-            score += min(0.12, Double(explicitPathOverlap) * 0.06)
-            score *= 0.78 + min(0.22, profile.coherence * 0.22)
-            if !sourceExtension.isEmpty, profile.extensions.contains(sourceExtension) { score += 0.035 }
-            if profile.sampledFiles >= 2,
-               !sourceExtension.isEmpty,
-               !profile.extensions.contains(sourceExtension) { score -= 0.025 }
+            let pathScore = min(0.18, Double(explicitPathOverlap) * 0.09)
+            let extensionScore = (!sourceExtension.isEmpty && profile.extensions.contains(sourceExtension)) ? 1.0 : 0.0
             let evidence = query.keys
                 .filter { profileVector[$0] != nil }
                 .sorted { (query[$0] ?? 0) * (profileVector[$0] ?? 0) > (query[$1] ?? 0) * (profileVector[$1] ?? 0) }
-            return (profile, score, Array(evidence.prefix(6)))
-        }.sorted { $0.1 > $1.1 }
+            return (profile, semanticScore, hypergraphScore, pathScore, extensionScore, Array(evidence.prefix(8)))
+        }
 
-        guard let best = ranked.first else { return nil }
-        let second = ranked.dropFirst().first?.1 ?? 0
-        let margin = best.1 - second
-        // Routing is deliberately conservative: a folder must be a clear winner,
-        // otherwise retaining the current location is safer than a confident-looking mistake.
-        guard best.1 >= 0.085, margin >= 0.03, best.2.count >= 2 else { return nil }
+        let evidenceCandidates = scored.map {
+            FolderEvidenceCandidate(
+                identifier: $0.0.path,
+                semantic: $0.1,
+                hypergraph: $0.2,
+                pathMatch: $0.3,
+                extensionMatch: $0.4,
+                coherence: $0.0.coherence,
+                evidenceTermCount: $0.5.count
+            )
+        }
+        guard let ranking = EvidenceRanker.rank(evidenceCandidates),
+              let best = scored.first(where: { $0.0.path == ranking.identifier })
+        else { return nil }
         return FolderKnowledgeRecommendation(
             destination: URL(fileURLWithPath: best.0.path, isDirectory: true),
-            score: min(0.98, best.1),
-            margin: margin,
-            evidenceTerms: best.2
+            score: ranking.quality,
+            margin: ranking.margin,
+            evidenceTerms: best.5,
+            evidenceChannels: ranking.channels,
+            confidence: ranking.confidence
         )
     }
 
     static func buildProfile(folder: URL) async -> FolderKnowledgeProfile? {
-        let candidates = sampleFiles(in: folder, limit: 10)
+        let candidates = sampleFiles(in: folder, limit: 18)
         guard !candidates.isEmpty else { return nil }
         var documents: [(url: URL, counts: [String: Int])] = []
         var extensions: Set<String> = []
@@ -175,10 +183,10 @@ enum FolderKnowledgeIndex {
             }
         }
 
-        let initialCount = min(3, candidates.count)
+        let initialCount = min(6, candidates.count)
         await extract(candidates.prefix(initialCount))
         let initialCoherence = coherence(of: documents.map(\.counts))
-        if candidates.count > initialCount, initialCoherence < 0.22 {
+        if candidates.count > initialCount, initialCoherence < 0.30 {
             await extract(candidates.dropFirst(initialCount))
         }
 
@@ -187,7 +195,9 @@ enum FolderKnowledgeIndex {
         let similarities = vectors.map { cosine($0, vectors[medoidIndex]) }
         let desiredMajority = max(1, Int(ceil(Double(vectors.count) * 0.6)))
         let rankedIndices = similarities.indices.sorted { similarities[$0] > similarities[$1] }
-        var dominantIndices = rankedIndices.filter { similarities[$0] >= 0.14 }
+        let similarityMedian = similarities.sorted()[similarities.count / 2]
+        let dominantThreshold = max(0.08, min(0.24, similarityMedian * 0.62))
+        var dominantIndices = rankedIndices.filter { similarities[$0] >= dominantThreshold }
         if dominantIndices.count < desiredMajority {
             dominantIndices = Array(rankedIndices.prefix(desiredMajority))
         }
@@ -229,6 +239,16 @@ enum FolderKnowledgeIndex {
 
     private static func normalizedCounts(_ counts: [String: Int]) -> [String: Double] {
         normalized(counts.mapValues(Double.init))
+    }
+
+    private static func mergeCounts(
+        _ source: [String: Int],
+        into destination: inout [String: Int],
+        multiplier: Int
+    ) {
+        for (term, count) in source {
+            destination[term, default: 0] += count * multiplier
+        }
     }
 
     private static func coherence(of documents: [[String: Int]]) -> Double {
@@ -298,7 +318,7 @@ enum FolderKnowledgeIndex {
             includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey],
             options: [.skipsHiddenFiles, .skipsPackageDescendants]
         ) else { return [] }
-        return values.compactMap { url -> (URL, Date)? in
+        let eligible = values.compactMap { url -> (URL, Date)? in
             guard supportedExtensions.contains(url.pathExtension.lowercased()),
                   !FolderMonitor.shouldIgnore(path: url.path),
                   let resource = try? url.resourceValues(forKeys: [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey]),
@@ -308,8 +328,32 @@ enum FolderKnowledgeIndex {
             return (url, resource.contentModificationDate ?? .distantPast)
         }
         .sorted { $0.1 > $1.1 }
-        .prefix(limit)
-        .map(\.0)
+        guard eligible.count > limit else { return eligible.map(\.0) }
+
+        var selected: [URL] = []
+        var selectedPaths: Set<String> = []
+        func append(_ url: URL) {
+            if selectedPaths.insert(url.path).inserted, selected.count < limit { selected.append(url) }
+        }
+
+        // Start with recent activity, then deliberately add format diversity
+        // and evenly-spaced historical files so a short-lived theme cannot
+        // redefine an established folder.
+        for item in eligible.prefix(min(4, limit)) { append(item.0) }
+        var seenExtensions = Set(selected.map { $0.pathExtension.lowercased() })
+        for item in eligible where selected.count < limit {
+            let ext = item.0.pathExtension.lowercased()
+            if seenExtensions.insert(ext).inserted { append(item.0) }
+        }
+        let remainingSlots = max(0, limit - selected.count)
+        if remainingSlots > 0 {
+            for index in 0..<remainingSlots {
+                let position = Int((Double(index + 1) / Double(remainingSlots + 1)) * Double(eligible.count - 1))
+                append(eligible[position].0)
+            }
+        }
+        for item in eligible where selected.count < limit { append(item.0) }
+        return selected
     }
 
     /// Indexing deliberately avoids OCR and Quick Look. Those remain enabled
@@ -321,7 +365,9 @@ enum FolderKnowledgeIndex {
             return AdvancedExtractors.extractOfficeText(at: url) ?? ""
         }
         if ext == "pdf", let document = PDFDocument(url: url) {
-            return (0..<min(4, document.pageCount)).compactMap { document.page(at: $0)?.string }
+            let last = max(0, document.pageCount - 1)
+            let pageIndices = Array(Set([0, min(1, last), last / 2, last])).sorted()
+            return pageIndices.compactMap { document.page(at: $0)?.string }
                 .joined(separator: " ")
         }
         guard let handle = try? FileHandle(forReadingFrom: url) else { return "" }
@@ -367,7 +413,7 @@ enum FolderKnowledgeIndex {
 
     private static var storageURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/SavePilot/folder-knowledge-v5.json")
+            .appendingPathComponent("Library/Application Support/SavePilot/folder-knowledge-v6.json")
     }
 
     private static let stopWords: Set<String> = [

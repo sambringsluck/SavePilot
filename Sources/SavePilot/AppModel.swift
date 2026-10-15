@@ -432,14 +432,15 @@ final class AppModel: ObservableObject {
             )
         } else if let knowledge {
             let terms = knowledge.evidenceTerms.joined(separator: "、")
+            let channels = knowledge.evidenceChannels.joined(separator: " + ")
             fallback = FileSuggestion(
                 id: fallback.id,
                 source: url,
                 destinationFolder: knowledge.destination,
                 proposedFolderName: "",
-                reason: "本地混合 RAG/超图：内容主题与该目录的多数文件画像一致，并通过“\(terms)”等共享节点形成关系证据（领先第二候选 \(Int(knowledge.margin * 100)) 分）",
+                reason: "本地多证据 RAG：\(channels) 一致指向该目录；关键证据“\(terms)”（领先第二候选 \(Int(knowledge.margin * 100)) 分）",
                 summary: fallback.summary,
-                confidence: min(0.96, 0.68 + knowledge.score * 0.6),
+                confidence: knowledge.confidence,
                 createsFolder: false,
                 detectedAt: fallback.detectedAt
             )
@@ -448,7 +449,8 @@ final class AppModel: ObservableObject {
             source: url,
             content: content,
             roots: roots,
-            fallback: fallback
+            fallback: fallback,
+            hasGroundedRecommendation: learned != nil || knowledge != nil
         )
         let suggestion = sanitizeFolderCreation(
             refined,
@@ -481,28 +483,44 @@ final class AppModel: ObservableObject {
         source: URL,
         content: ExtractedContent,
         roots: [URL],
-        fallback: FileSuggestion
+        fallback: FileSuggestion,
+        hasGroundedRecommendation: Bool
     ) async -> FileSuggestion {
+        // Personal feedback and the local folder-content index are grounded in
+        // this user's real files. A generative model that only sees a compact
+        // prompt must never overwrite that stronger evidence.
+        if hasGroundedRecommendation { return fallback }
+        let validate: (FileSuggestion?) -> FileSuggestion = { candidate in
+            guard let candidate,
+                  candidate.confidence >= 0.78,
+                  self.engine.isPlausibleModelDestination(
+                    source: source,
+                    content: content,
+                    destination: candidate.finalDestinationFolder
+                  )
+            else { return fallback }
+            return candidate
+        }
         switch aiBackend {
         case .automatic:
-            return await AppleFoundationRecommender.refine(
+            return validate(await AppleFoundationRecommender.refine(
                 source: source, content: content, roots: roots, fallback: fallback
-            ) ?? fallback
+            ))
         case .appleFoundation:
-            return await AppleFoundationRecommender.refine(
+            return validate(await AppleFoundationRecommender.refine(
                 source: source, content: content, roots: roots, fallback: fallback
-            ) ?? fallback
+            ))
         case .ollama:
-            return await OllamaRecommender.refine(
+            return validate(await OllamaRecommender.refine(
                 source: source,
                 content: content,
                 roots: roots,
                 fallback: fallback,
                 model: ollamaModel
-            ) ?? fallback
+            ))
         case .deepseekCloud:
             if let apiKey = KeychainStore.loadDeepSeekKey() {
-                return await DeepSeekRecommender.refine(
+                return validate(await DeepSeekRecommender.refine(
                     source: source,
                     content: content,
                     roots: roots,
@@ -510,7 +528,7 @@ final class AppModel: ObservableObject {
                     apiKey: apiKey,
                     model: deepSeekModel,
                     sendDetailedContent: deepSeekSendDetailedContent
-                ) ?? fallback
+                ))
             } else {
                 return fallback
             }

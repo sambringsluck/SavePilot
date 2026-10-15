@@ -45,6 +45,7 @@ enum AppleFoundationRecommender {
             \(indexed)
 
             优先选择语义明确匹配的现有文件夹。没有合适选项时，destinationIndex 设为 -1，并提出简洁稳定的新文件夹名称。
+            若两个目录都可能匹配，应选择 -1 而不是猜测。
             严格只返回一行 JSON，不要使用 Markdown：
             {"destinationIndex":0,"newFolder":"","reason":"中文理由","confidence":0.8}
             """
@@ -56,7 +57,9 @@ enum AppleFoundationRecommender {
                 let response = try await session.respond(to: prompt)
                 let json = extractJSONObject(from: response.content)
                 guard let data = json.data(using: .utf8),
-                      let decision = try? JSONDecoder().decode(AppleFileDecision.self, from: data)
+                      let decision = try? JSONDecoder().decode(AppleFileDecision.self, from: data),
+                      (-1..<folders.count).contains(decision.destinationIndex),
+                      decision.reason.count <= 240
                 else { return nil }
                 let confidence = min(1, max(0, decision.confidence))
                 if folders.indices.contains(decision.destinationIndex) {

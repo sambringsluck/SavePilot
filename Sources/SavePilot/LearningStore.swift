@@ -62,7 +62,7 @@ final class LearningStore {
     private var trainingEvents: [TrainingEvent]
     private let defaults: UserDefaults
     private let key = "learningRules.v1"
-    private let clusterKey = "novelThemeClusters.v2"
+    private let clusterKey = "novelThemeClusters.v3"
     private let eventKey = "personalTrainingEvents.v1"
 
     init(defaults: UserDefaults = .standard) {
@@ -103,19 +103,25 @@ final class LearningStore {
                   roots.contains(where: { destination.path.hasPrefix($0.standardizedFileURL.path) })
             else { return nil }
             let memoryTerms = Set(rule.terms)
-            let union = max(1, terms.union(memoryTerms).count)
-            let similarity = Double(terms.intersection(memoryTerms).count) / Double(union)
-            let extensionBonus = !ext.isEmpty && ext == rule.fileExtension ? 0.22 : 0
-            let approvalBonus = min(0.24, log1p(Double(rule.approvals)) * 0.08)
-            let rejectionPenalty = min(0.65, Double(rule.rejections) * 0.18)
-            return (rule, similarity + extensionBonus + approvalBonus - rejectionPenalty)
+            let shared = terms.intersection(memoryTerms)
+            guard shared.count >= 2 else { return nil }
+            let coverage = Double(shared.count) / Double(max(1, terms.count))
+            let specificity = Double(shared.count) / Double(max(1, memoryTerms.count))
+            let lexical = coverage * 0.72 + specificity * 0.28
+            let extensionBonus = !ext.isEmpty && ext == rule.fileExtension ? 0.055 : 0
+            let approvalBonus = min(0.16, log1p(Double(rule.approvals)) * 0.055)
+            let rejectionPenalty = min(0.72, Double(rule.rejections) * 0.22)
+            return (rule, lexical + extensionBonus + approvalBonus - rejectionPenalty)
         }.sorted { $0.1 > $1.1 }
-        guard let best = candidates.first, best.1 >= 0.34 else { return nil }
-        let confidence = min(0.98, 0.62 + best.1 * 0.28)
+        guard let best = candidates.first, best.1 >= 0.24 else { return nil }
+        let second = candidates.dropFirst().first?.1 ?? 0
+        let margin = best.1 - second
+        guard margin >= 0.055 || (best.0.approvals >= 3 && best.1 >= 0.42) else { return nil }
+        let confidence = min(0.97, 0.57 + best.1 * 0.31 + margin * 0.20)
         return Recommendation(
             destination: URL(fileURLWithPath: best.0.destinationPath, isDirectory: true),
             confidence: confidence,
-            evidence: "检索到 \(best.0.approvals) 次相似归档记忆"
+            evidence: "检索到 \(best.0.approvals) 次相似归档记忆，且领先其他记忆 \(Int(margin * 100)) 分"
         )
     }
 
@@ -209,7 +215,7 @@ final class LearningStore {
     }
 
     private func queryTerms(source: URL, content: ExtractedContent) -> Set<String> {
-        tokenSet("\(source.deletingPathExtension().lastPathComponent) \(content.summary) \(content.entities.joined(separator: " ")) \(content.signals.joined(separator: " ")) \(String(content.text.prefix(1200)))")
+        tokenSet("\(source.deletingPathExtension().lastPathComponent) \(content.summary) \(content.entities.joined(separator: " "))")
     }
 
     private func clusterSimilarity(_ cluster: NovelCluster, topic: String, terms: Set<String>) -> Double {

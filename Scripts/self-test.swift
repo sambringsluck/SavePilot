@@ -17,7 +17,10 @@ struct SavePilotSelfTest {
         try testFilenameStopWordsDoNotRoute()
         try testSystemDataExclusions()
         try testMarkdownExportNormalization()
-        print("SavePilot self-test: 10/10 passed")
+        try testEvidenceFusionAndAbstention()
+        try testMemoryRejectsUnrelatedSameFormat()
+        try testKeywordBoundaryMatching()
+        print("SavePilot self-test: 13/13 passed")
     }
 
     private static func testExistingFolderSuggestion() throws {
@@ -222,6 +225,95 @@ struct SavePilotSelfTest {
               !normalized.contains("irrelevant hidden token"),
               !normalized.contains("export: conversation")
         else { throw SelfTestError.failed("markdown exported conversation normalization") }
+    }
+
+    private static func testEvidenceFusionAndAbstention() throws {
+        let strong = FolderEvidenceCandidate(
+            identifier: "finance", semantic: 0.23, hypergraph: 0.12,
+            pathMatch: 0.09, extensionMatch: 1, coherence: 0.82, evidenceTermCount: 7
+        )
+        let weak = FolderEvidenceCandidate(
+            identifier: "travel", semantic: 0.07, hypergraph: 0,
+            pathMatch: 0, extensionMatch: 1, coherence: 0.9, evidenceTermCount: 2
+        )
+        guard EvidenceRanker.rank([strong, weak])?.identifier == "finance" else {
+            throw SelfTestError.failed("multi-evidence ranking")
+        }
+
+        let tiedA = FolderEvidenceCandidate(
+            identifier: "a", semantic: 0.15, hypergraph: 0.07,
+            pathMatch: 0, extensionMatch: 1, coherence: 0.8, evidenceTermCount: 4
+        )
+        let tiedB = FolderEvidenceCandidate(
+            identifier: "b", semantic: 0.148, hypergraph: 0.069,
+            pathMatch: 0, extensionMatch: 1, coherence: 0.8, evidenceTermCount: 4
+        )
+        guard EvidenceRanker.rank([tiedA, tiedB]) == nil else {
+            throw SelfTestError.failed("ambiguous evidence abstention")
+        }
+    }
+
+    private static func testMemoryRejectsUnrelatedSameFormat() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let destination = root.appendingPathComponent("金融研究", isDirectory: true)
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        let suiteName = "SavePilotMemoryTest.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else { throw SelfTestError.failed("memory defaults") }
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let memory = LearningStore(defaults: defaults)
+        memory.record(
+            source: root.appendingPathComponent("portfolio-analysis.pdf"),
+            summary: "股票 债券 投资组合 风险 收益",
+            destination: destination
+        )
+        let unrelated = ExtractedContent(
+            text: "hotel flight museum beach",
+            kind: "PDF",
+            summary: "旅行 酒店 航班 博物馆"
+        )
+        guard memory.recommendation(
+            for: root.appendingPathComponent("vacation-plan.pdf"),
+            content: unrelated,
+            roots: [root]
+        ) == nil else { throw SelfTestError.failed("same-format memory false positive") }
+    }
+
+    private static func testKeywordBoundaryMatching() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let content = ExtractedContent(
+            text: "A borderline discussion about coordination and ordinary language.",
+            kind: "文本",
+            summary: "linguistics discussion"
+        )
+        let source = root.appendingPathComponent("borderline-coordination.txt")
+        let propaganda = ExtractedContent(
+            text: "People may reach agreement about claims, persuasion, media and public opinion.",
+            kind: "Office 文档",
+            summary: "propaganda and misinformation"
+        )
+        let physics = ExtractedContent(
+            text: "force mass energy mechanics thermodynamics project report",
+            kind: "PDF",
+            summary: "physics textbook for scientists and engineers"
+        )
+        let engine = SuggestionEngine()
+        guard engine.stableNewFolderName(for: source, content: content) != "收据" else {
+            throw SelfTestError.failed("keyword substring false positive")
+        }
+        guard engine.stableNewFolderName(
+            for: root.appendingPathComponent("Propaganda.docx"), content: propaganda
+        ) != "合同与法律" else { throw SelfTestError.failed("weak legal signal") }
+        guard engine.stableNewFolderName(
+            for: root.appendingPathComponent("Physics_for_Scientists_and_Engineers.pdf"), content: physics
+        ) != "工作" else { throw SelfTestError.failed("physics routed to work") }
+        guard engine.stableNewFolderName(
+            for: root.appendingPathComponent("hw3.pdf"), content: physics
+        ) == "学习" else { throw SelfTestError.failed("homework title pattern") }
+        guard engine.stableNewFolderName(
+            for: root.appendingPathComponent("1014 面试问题.docx"), content: content
+        ) == "工作" else { throw SelfTestError.failed("interview title pattern") }
     }
 
     private static func temporaryDirectory() throws -> URL {

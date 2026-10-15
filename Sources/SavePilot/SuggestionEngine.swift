@@ -9,12 +9,12 @@ struct SuggestionEngine {
     }
 
     private let categories: [Category] = [
-        .init(folder: "工作", aliases: ["work", "business", "office", "项目", "客户"], keywords: ["project", "meeting", "report", "proposal", "client", "工作", "会议", "报告", "方案", "客户"]),
-        .init(folder: "财务", aliases: ["finance", "money", "bank", "税务"], keywords: ["bank", "statement", "tax", "budget", "finance", "invoice", "银行", "税", "预算", "账单", "发票"]),
+        .init(folder: "工作", aliases: ["work", "business", "office", "interview", "resume", "cv", "项目", "客户", "面试", "简历"], keywords: ["project", "meeting", "report", "proposal", "client", "interview", "resume", "工作", "会议", "报告", "方案", "客户", "面试", "简历"]),
+        .init(folder: "财务", aliases: ["finance", "financial", "money", "bank", "portfolio", "税务", "金融", "投资"], keywords: ["bank", "statement", "tax", "budget", "finance", "financial", "invoice", "portfolio", "investment", "stock", "bond", "银行", "税", "预算", "账单", "发票", "金融", "投资", "股票", "债券", "资产配置"]),
         .init(folder: "收据", aliases: ["receipts", "receipt", "报销"], keywords: ["receipt", "purchase", "order", "paid", "total", "收据", "小票", "订单", "付款", "报销"]),
         .init(folder: "合同与法律", aliases: ["legal", "contracts", "contract"], keywords: ["agreement", "contract", "legal", "terms", "signature", "合同", "协议", "法律", "签署"]),
         .init(folder: "历史", aliases: ["history", "historical", "world history", "global history", "世界史", "通史"], keywords: ["history", "historical", "civilization", "empire", "ancient", "modern history", "历史", "世界史", "全球史", "通史", "文明", "帝国", "古代史", "近代史"]),
-        .init(folder: "学习", aliases: ["study", "school", "education", "research", "课程"], keywords: ["course", "lecture", "homework", "paper", "research", "学习", "课程", "作业", "论文", "研究"]),
+        .init(folder: "学习", aliases: ["study", "school", "education", "research", "course", "homework", "hw", "textbook", "physics", "课程", "教材"], keywords: ["course", "lecture", "homework", "textbook", "physics", "research", "学习", "课程", "作业", "论文", "研究", "教材"]),
         .init(folder: "医疗", aliases: ["health", "medical"], keywords: ["medical", "health", "hospital", "prescription", "diagnosis", "医疗", "健康", "医院", "处方", "诊断"]),
         .init(folder: "旅行", aliases: ["travel", "trip"], keywords: ["flight", "hotel", "booking", "itinerary", "visa", "旅行", "航班", "酒店", "预订", "签证"]),
         .init(folder: "截图", aliases: ["screenshots", "screenshot"], keywords: ["screenshot", "screen shot", "截屏", "截图"]),
@@ -81,6 +81,7 @@ struct SuggestionEngine {
     func stableNewFolderName(for source: URL, content: ExtractedContent) -> String? {
         let evidence = "\(source.lastPathComponent) \(content.summary) \(content.entities.joined(separator: " ")) \(String(content.text.prefix(4_000)))".lowercased()
         let title = source.deletingPathExtension().lastPathComponent.lowercased()
+        if isHomeworkTitle(title) { return "学习" }
         let category = bestCategory(for: source, evidence: evidence)
         guard category.folder != "待整理" else { return nil }
 
@@ -88,14 +89,28 @@ struct SuggestionEngine {
         if formatCategories.contains(category.folder) { return category.folder }
 
         let titleSignals = category.aliases + category.keywords
-        if titleSignals.contains(where: { signal in
-            let normalized = signal.lowercased()
-            return normalized.count >= 2 && title.contains(normalized)
-        }) {
+        if titleSignals.contains(where: { containsSignal($0, in: title) }) {
             return category.folder
         }
-        let bodyHits = Set(category.keywords.filter { evidence.contains($0.lowercased()) })
-        return bodyHits.count >= 2 ? category.folder : nil
+        let bodyHits = Set(category.keywords.filter { containsSignal($0, in: evidence) })
+        let anchors = strongAnchors[category.folder] ?? category.keywords
+        let anchorHits = anchors.filter { containsSignal($0, in: evidence) }
+        let requiredHits = ["工作", "学习", "个人"].contains(category.folder) ? 3 : 2
+        return bodyHits.count >= requiredHits && !anchorHits.isEmpty ? category.folder : nil
+    }
+
+    func isPlausibleModelDestination(source: URL, content: ExtractedContent, destination: URL) -> Bool {
+        if destination.standardizedFileURL == source.deletingLastPathComponent().standardizedFileURL { return true }
+        let evidence = "\(source.lastPathComponent) \(content.summary) \(String(content.text.prefix(1_200)))".lowercased()
+        let category = bestCategory(for: source, evidence: evidence)
+        if folderNameMatches(category: category, folder: destination) { return true }
+
+        let titleTerms = tokens(source.deletingPathExtension().lastPathComponent).filter { $0.count >= 3 }
+        let pathTerms = tokens(destination.pathComponents.suffix(2).joined(separator: " "))
+        if !titleTerms.intersection(pathTerms).isEmpty { return true }
+
+        let target = destination.pathComponents.suffix(2).joined(separator: " ")
+        return semanticSimilarity(evidence: String(evidence.prefix(420)), target: target) >= 0.64
     }
 
     private func bestCategory(for source: URL, evidence: String) -> Category {
@@ -117,11 +132,28 @@ struct SuggestionEngine {
         let contentCategories = categories.dropLast().filter {
             !["截图", "图片", "代码", "安装包", "压缩包", "音视频"].contains($0.folder)
         }
+        let title = source.deletingPathExtension().lastPathComponent.lowercased()
+        if isHomeworkTitle(title),
+           let study = categories.first(where: { $0.folder == "学习" }) {
+            return study
+        }
+        let titleMatches = contentCategories.compactMap { category -> (Category, Int)? in
+            let count = (category.aliases + category.keywords).filter { containsSignal($0, in: title) }.count
+            return count > 0 ? (category, count) : nil
+        }.sorted { $0.1 > $1.1 }
+        if let bestTitle = titleMatches.first,
+           titleMatches.dropFirst().first?.1 != bestTitle.1 {
+            return bestTitle.0
+        }
+
         let keywordRanked = contentCategories.map { category in
             (category, Double(score(category: category, evidence: evidence)))
         }.sorted { $0.1 > $1.1 }
-        if let best = keywordRanked.first, best.1 >= 2 {
-            return best.0
+        if let best = keywordRanked.first {
+            let titleHasDirectSignal = (best.0.aliases + best.0.keywords).contains {
+                containsSignal($0, in: title)
+            }
+            if best.1 >= 4 || (best.1 >= 2 && titleHasDirectSignal) { return best.0 }
         }
 
         let semanticRanked = contentCategories.map { category in
@@ -130,7 +162,9 @@ struct SuggestionEngine {
                 target: ([category.folder] + category.aliases + category.keywords).joined(separator: " ")
             ))
         }.sorted { $0.1 > $1.1 }
-        guard let best = semanticRanked.first, best.1 >= 0.54 else {
+        guard let best = semanticRanked.first else { return categories.last! }
+        let second = semanticRanked.dropFirst().first?.1 ?? 0
+        guard best.1 >= 0.64, best.1 - second >= 0.06 else {
             return categories.last!
         }
         return best.0
@@ -138,7 +172,7 @@ struct SuggestionEngine {
 
     private func score(category: Category, evidence: String) -> Int {
         category.keywords.reduce(0) { score, keyword in
-            score + (evidence.contains(keyword.lowercased()) ? 2 : 0)
+            score + (containsSignal(keyword, in: evidence) ? 2 : 0)
         }
     }
 
@@ -224,12 +258,45 @@ struct SuggestionEngine {
     }
 
     private func confidenceFor(category: Category, evidence: String, matchedExisting: Bool) -> Double {
-        let hits = category.keywords.filter { evidence.contains($0.lowercased()) }.count
+        let hits = category.keywords.filter { containsSignal($0, in: evidence) }.count
         let semantic = hits == 0 ? semanticSimilarity(
             evidence: String(evidence.prefix(360)),
             target: ([category.folder] + category.aliases + category.keywords).joined(separator: " ")
         ) : 0
         return min(0.98, 0.48 + Double(hits) * 0.07 + semantic * 0.22 + (matchedExisting ? 0.1 : 0))
+    }
+
+    private func containsSignal(_ signal: String, in evidence: String) -> Bool {
+        let normalized = signal.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        guard normalized.count >= 2 else { return false }
+        if normalized.contains(where: { !$0.isASCII }) || normalized.contains(" ") {
+            return evidence.contains(normalized)
+        }
+        return tokens(evidence).contains(normalized)
+    }
+
+    private func isHomeworkTitle(_ title: String) -> Bool {
+        let parts = title.split { !$0.isLetter && !$0.isNumber }.map(String.init)
+        return parts.contains { token in
+            if token == "hw" || token == "homework" { return true }
+            guard token.hasPrefix("hw") else { return false }
+            let suffix = token.dropFirst(2)
+            return !suffix.isEmpty && suffix.allSatisfy { $0.isNumber }
+        }
+    }
+
+    private var strongAnchors: [String: [String]] {
+        [
+            "工作": ["client", "proposal", "meeting", "business", "interview", "resume", "客户", "方案", "会议", "工作", "面试", "简历"],
+            "财务": ["finance", "financial", "bank", "tax", "invoice", "portfolio", "investment", "金融", "银行", "税", "发票", "投资"],
+            "收据": ["receipt", "paid", "purchase", "报销", "收据", "小票", "付款"],
+            "合同与法律": ["contract", "legal", "signature", "合同", "法律", "签署"],
+            "历史": ["history", "historical", "civilization", "empire", "历史", "通史", "文明", "帝国"],
+            "学习": ["course", "homework", "textbook", "research", "课程", "作业", "论文", "研究", "教材"],
+            "医疗": ["medical", "hospital", "prescription", "diagnosis", "医疗", "医院", "处方", "诊断"],
+            "旅行": ["flight", "hotel", "itinerary", "visa", "旅行", "航班", "酒店", "签证"],
+            "个人": ["family", "personal", "家庭", "个人"]
+        ]
     }
 
     private func discoverFolders(in roots: [URL], excludingFolders: Set<String>) -> [URL] {
