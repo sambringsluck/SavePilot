@@ -27,6 +27,7 @@ struct RuntimeDiagnostics: Codable {
         let reason: String
         let confidence: Double
         let createsFolder: Bool
+        let suggestedFileName: String
     }
 
     let lastAnalyzedFile: String

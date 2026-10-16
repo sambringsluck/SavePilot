@@ -1,10 +1,10 @@
 import Foundation
 
 enum FileMover {
-    static func move(_ source: URL, to folder: URL) throws -> MoveRecord {
+    static func move(_ source: URL, to folder: URL, preferredFileName: String? = nil) throws -> MoveRecord {
         try validate(folder: folder)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        let destination = availableDestination(for: source, in: folder)
+        let destination = availableDestination(for: source, in: folder, preferredFileName: preferredFileName)
         try FileManager.default.moveItem(at: source, to: destination)
         return MoveRecord(
             id: UUID(),
@@ -30,10 +30,15 @@ enum FileMover {
         try FileManager.default.moveItem(at: source, to: original)
     }
 
-    private static func availableDestination(for source: URL, in folder: URL) -> URL {
-        let base = source.deletingPathExtension().lastPathComponent
-        let ext = source.pathExtension
-        var candidate = folder.appendingPathComponent(source.lastPathComponent)
+    private static func availableDestination(for source: URL, in folder: URL, preferredFileName: String?) -> URL {
+        let requestedName = preferredFileName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let safeName = (requestedName?.isEmpty == false && requestedName?.contains("/") == false)
+            ? requestedName!
+            : source.lastPathComponent
+        let requestedURL = URL(fileURLWithPath: safeName)
+        let base = requestedURL.deletingPathExtension().lastPathComponent
+        let ext = requestedURL.pathExtension
+        var candidate = folder.appendingPathComponent(safeName)
         var index = 2
         while FileManager.default.fileExists(atPath: candidate.path) {
             let name = ext.isEmpty ? "\(base) \(index)" : "\(base) \(index).\(ext)"

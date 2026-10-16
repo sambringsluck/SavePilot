@@ -55,6 +55,8 @@ final class LearningStore {
         let destinationPath: String
         let outcome: String
         let createdAt: Date
+        let proposedFileName: String?
+        let approvedFileName: String?
     }
 
     private var rules: [Rule]
@@ -103,7 +105,27 @@ final class LearningStore {
     var summary: String {
         let approvals = rules.reduce(0) { $0 + $1.approvals }
         let rejections = rules.reduce(0) { $0 + $1.rejections }
-        return "已积累 \(trainingEvents.count) 条个人训练样本（\(approvals) 次确认、\(rejections) 次纠正/拒绝），形成 \(rules.count) 条本地记忆"
+        let namingCorrections = trainingEvents.filter {
+            guard let approved = $0.approvedFileName else { return false }
+            return approved != $0.fileName
+        }.count
+        return "已积累 \(trainingEvents.count) 条个人训练样本（\(approvals) 次确认、\(rejections) 次纠正/拒绝、\(namingCorrections) 次命名样本），形成 \(rules.count) 条本地记忆"
+    }
+
+    var preferredFileNameSeparator: String {
+        var counts = ["_": 0, " - ": 0, "-": 0, " ": 0]
+        for event in trainingEvents {
+            guard let name = event.approvedFileName,
+                  name != event.fileName
+            else { continue }
+            let base = URL(fileURLWithPath: name).deletingPathExtension().lastPathComponent
+            if base.contains("_") { counts["_", default: 0] += 1 }
+            else if base.contains(" - ") { counts[" - ", default: 0] += 1 }
+            else if base.contains("-") { counts["-", default: 0] += 1 }
+            else if base.contains(" ") { counts[" ", default: 0] += 1 }
+        }
+        let winner = counts.max { lhs, rhs in lhs.value < rhs.value }
+        return (winner?.value ?? 0) >= 2 ? winner!.key : "_"
     }
 
     func recommendation(for source: URL, content: ExtractedContent, roots: [URL]) -> Recommendation? {
@@ -145,7 +167,13 @@ final class LearningStore {
         )
     }
 
-    func record(source: URL, summary: String, destination: URL) {
+    func record(
+        source: URL,
+        summary: String,
+        destination: URL,
+        proposedFileName: String? = nil,
+        approvedFileName: String? = nil
+    ) {
         let terms = tokenSet("\(source.deletingPathExtension().lastPathComponent) \(summary)")
         updateRule(
             fileExtension: source.pathExtension.lowercased(),
@@ -155,7 +183,14 @@ final class LearningStore {
             at: Date()
         )
         persistRules()
-        appendTrainingEvent(source: source, summary: summary, destination: destination, outcome: "approved")
+        appendTrainingEvent(
+            source: source,
+            summary: summary,
+            destination: destination,
+            outcome: "approved",
+            proposedFileName: proposedFileName,
+            approvedFileName: approvedFileName
+        )
     }
 
     func recordRejection(source: URL, summary: String, destination: URL) {
@@ -319,7 +354,14 @@ final class LearningStore {
         defaults.set(try? JSONEncoder().encode(novelClusters), forKey: clusterKey)
     }
 
-    private func appendTrainingEvent(source: URL, summary: String, destination: URL, outcome: String) {
+    private func appendTrainingEvent(
+        source: URL,
+        summary: String,
+        destination: URL,
+        outcome: String,
+        proposedFileName: String? = nil,
+        approvedFileName: String? = nil
+    ) {
         trainingEvents.append(TrainingEvent(
             id: UUID(),
             fileName: source.lastPathComponent,
@@ -328,7 +370,9 @@ final class LearningStore {
             terms: Array(tokenSet("\(source.deletingPathExtension().lastPathComponent) \(summary)").prefix(120)),
             destinationPath: destination.standardizedFileURL.path,
             outcome: outcome,
-            createdAt: Date()
+            createdAt: Date(),
+            proposedFileName: proposedFileName,
+            approvedFileName: approvedFileName
         ))
         trainingEvents = Array(trainingEvents.suffix(2_000))
         defaults.set(try? JSONEncoder().encode(trainingEvents), forKey: eventKey)

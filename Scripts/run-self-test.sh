@@ -7,6 +7,8 @@ test_binary="$(mktemp -d)/SavePilotSelfTest"
 cd "$project_dir"
 swiftc \
   Sources/SavePilot/Models.swift \
+  Sources/SavePilot/AcademicSubjectClassifier.swift \
+  Sources/SavePilot/FileNameSuggester.swift \
   Sources/SavePilot/MarkdownContentNormalizer.swift \
   Sources/SavePilot/EvidenceRanker.swift \
   Sources/SavePilot/SeriesConsensus.swift \

@@ -24,7 +24,8 @@ struct SavePilotSelfTest {
         try testGenericTechnicalFolderNeedsProjectContext()
         try testMemoryKeepsSeparateTopicsAndHonorsRejection()
         try testNumberedSeriesConsensus()
-        print("SavePilot self-test: 17/17 passed")
+        try testFileNameSuggestionAndRename()
+        print("SavePilot self-test: 18/18 passed")
     }
 
     private static func testExistingFolderSuggestion() throws {
@@ -318,10 +319,43 @@ struct SavePilotSelfTest {
         ) != "工作" else { throw SelfTestError.failed("physics routed to work") }
         guard engine.stableNewFolderName(
             for: root.appendingPathComponent("hw3.pdf"), content: physics
-        ) == "学习" else { throw SelfTestError.failed("homework title pattern") }
+        ) == "物理" else { throw SelfTestError.failed("homework subject hierarchy") }
         guard engine.stableNewFolderName(
             for: root.appendingPathComponent("1014 面试问题.docx"), content: content
         ) == "工作" else { throw SelfTestError.failed("interview title pattern") }
+
+        let financeModel = ExtractedContent(
+            text: "investment return risk correlation historical data optimal portfolio bank stock",
+            kind: "Office 文档",
+            summary: "portfolio optimization with historical data"
+        )
+        guard engine.stableNewFolderName(
+            for: root.appendingPathComponent("建模2.docx"), content: financeModel
+        ) != "历史" else { throw SelfTestError.failed("incidental historical data is not history") }
+
+        let explicitPhysicsHomework = ExtractedContent(
+            text: "AP Physics C Mechanics Homework. Questions on force, motion, energy and momentum.",
+            kind: "PDF",
+            summary: "AP Physics C mechanics homework"
+        )
+        guard engine.stableNewFolderName(
+            for: root.appendingPathComponent("hw3.pdf"), content: explicitPhysicsHomework
+        ) == "物理" else { throw SelfTestError.failed("physics homework content") }
+
+        let ambiguousHomework = ExtractedContent(
+            text: "Complete questions 1 through 10 before next class.",
+            kind: "PDF",
+            summary: "Homework assignment"
+        )
+        let physicsHeavyProfile = UserProfileSnapshot(
+            academicAffinity: ["物理": 100], observedLooseFiles: 20,
+            profiledFolders: 8, sampledFiles: 80, updatedAt: Date()
+        )
+        guard engine.stableNewFolderName(
+            for: root.appendingPathComponent("hw4.pdf"),
+            content: ambiguousHomework,
+            profile: physicsHeavyProfile
+        ) == "学习" else { throw SelfTestError.failed("profile must not hallucinate subject") }
     }
 
     private static func testAmbiguousTitleNeedsBodyEvidence() throws {
@@ -423,6 +457,31 @@ struct SavePilotSelfTest {
         let resolved = SeriesConsensus.consolidate(suggestions, roots: [root])
         guard resolved.allSatisfy({ $0.finalDestinationFolder.standardizedFileURL == project.standardizedFileURL }) else {
             throw SelfTestError.failed("numbered series consensus")
+        }
+    }
+
+    private static func testFileNameSuggestionAndRename() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("hw3.pdf")
+        try Data("physics homework".utf8).write(to: source)
+        let content = ExtractedContent(
+            text: "AP Physics C: Mechanics Homework #3 force motion energy momentum",
+            kind: "PDF",
+            summary: "AP Physics C mechanics homework 3"
+        )
+        guard let academic = AcademicSubjectClassifier.classify(source: source, content: content),
+              academic.folderName == "物理",
+              let naming = FileNameSuggester.suggest(source: source, content: content, academic: academic),
+              naming.fileName == "AP物理C_力学_作业3.pdf"
+        else { throw SelfTestError.failed("content-aware filename suggestion") }
+        let record = try FileMover.move(source, to: root, preferredFileName: naming.fileName)
+        guard URL(fileURLWithPath: record.destinationPath).lastPathComponent == naming.fileName else {
+            throw SelfTestError.failed("confirmed rename")
+        }
+        try FileMover.undo(record)
+        guard FileManager.default.fileExists(atPath: source.path) else {
+            throw SelfTestError.failed("rename undo")
         }
     }
 

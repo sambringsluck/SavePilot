@@ -31,6 +31,7 @@ final class AppModel: ObservableObject {
     @Published var folderAuditStatus = ""
     @Published var folderAuditRunning = false
     @Published var learningSummary = ""
+    @Published var userProfileSummary = ""
     @Published var folderKnowledgeStatus = ""
     @Published var activeSavePanel: SavePanelContext?
     @Published var preSaveHint: FileSuggestion?
@@ -43,6 +44,7 @@ final class AppModel: ObservableObject {
     private var savePanelObserver: SavePanelObserver?
     private let engine = SuggestionEngine()
     private let learningStore = LearningStore()
+    private let userProfileStore = UserProfileStore()
     private let defaults = UserDefaults.standard
     private var folderKnowledgeProfiles = FolderKnowledgeIndex.load()
     private var pendingURLs: [(url: URL, allowExisting: Bool)] = []
@@ -51,6 +53,7 @@ final class AppModel: ObservableObject {
     init() {
         loadSettings()
         learningSummary = learningStore.summary
+        userProfileSummary = userProfileStore.snapshot.summary
         launchAtLogin = SMAppService.mainApp.status == .enabled
         let monitor = FolderMonitor { [weak self] url in
             Task { @MainActor in self?.enqueueFile(url) }
@@ -214,22 +217,33 @@ final class AppModel: ObservableObject {
         Task { await refreshFolderKnowledge() }
     }
 
-    func confirm(_ suggestion: FileSuggestion) {
+    func confirm(_ suggestion: FileSuggestion, fileName rawFileName: String? = nil) {
         state = .moving
         do {
+            let approvedFileName = normalizedFileName(
+                rawFileName ?? suggestion.proposedFileName,
+                source: suggestion.source
+            )
             learningStore.record(
                 source: suggestion.source,
                 summary: suggestion.summary,
-                destination: suggestion.finalDestinationFolder
+                destination: suggestion.finalDestinationFolder,
+                proposedFileName: suggestion.proposedFileName,
+                approvedFileName: approvedFileName
             )
             learningSummary = learningStore.summary
-            if suggestion.source.deletingLastPathComponent().standardizedFileURL == suggestion.finalDestinationFolder.standardizedFileURL {
+            if suggestion.source.deletingLastPathComponent().standardizedFileURL == suggestion.finalDestinationFolder.standardizedFileURL,
+               approvedFileName == suggestion.source.lastPathComponent {
                 suggestions.removeAll { $0.id == suggestion.id }
                 state = suggestions.isEmpty ? .waiting : .ready
                 Task { await updateKnowledgeProfile(for: suggestion.finalDestinationFolder) }
                 return
             }
-            let record = try FileMover.move(suggestion.source, to: suggestion.finalDestinationFolder)
+            let record = try FileMover.move(
+                suggestion.source,
+                to: suggestion.finalDestinationFolder,
+                preferredFileName: approvedFileName
+            )
             ignoredPaths.insert(record.destinationPath)
             moveHistory.insert(record, at: 0)
             suggestions.removeAll { $0.id == suggestion.id }
@@ -259,12 +273,13 @@ final class AppModel: ObservableObject {
             summary: suggestion.summary,
             confidence: 1,
             createsFolder: false,
-            detectedAt: suggestion.detectedAt
+            detectedAt: suggestion.detectedAt,
+            proposedFileName: suggestion.proposedFileName
         )
         confirm(updated)
     }
 
-    func confirmEditedPath(_ rawPath: String, for suggestion: FileSuggestion) {
+    func confirmEditedPath(_ rawPath: String, fileName: String? = nil, for suggestion: FileSuggestion) {
         let trimmed = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
         let expanded = (trimmed as NSString).expandingTildeInPath
         guard expanded.hasPrefix("/"), expanded != "/" else {
@@ -288,9 +303,10 @@ final class AppModel: ObservableObject {
             summary: suggestion.summary,
             confidence: 1,
             createsFolder: !FileManager.default.fileExists(atPath: folder.path),
-            detectedAt: suggestion.detectedAt
+            detectedAt: suggestion.detectedAt,
+            proposedFileName: fileName ?? suggestion.proposedFileName
         )
-        confirm(updated)
+        confirm(updated, fileName: fileName)
     }
 
     func dismiss(_ suggestion: FileSuggestion) {
@@ -318,7 +334,26 @@ final class AppModel: ObservableObject {
 
     func resetLearning() {
         learningStore.reset()
+        userProfileStore.resetObservations()
         learningSummary = learningStore.summary
+        userProfileSummary = userProfileStore.snapshot.summary
+    }
+
+    private func normalizedFileName(_ rawName: String, source: URL) -> String {
+        var name = URL(fileURLWithPath: rawName.trimmingCharacters(in: .whitespacesAndNewlines)).lastPathComponent
+        name = name.replacingOccurrences(of: #"[/:\\\x00-\x1F]"#, with: "_", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: ".")))
+        let originalExtension = source.pathExtension
+        guard !name.isEmpty else { return source.lastPathComponent }
+        if !originalExtension.isEmpty {
+            let candidate = URL(fileURLWithPath: name)
+            let base = candidate.pathExtension.isEmpty
+                ? candidate.lastPathComponent
+                : candidate.deletingPathExtension().lastPathComponent
+            name = "\(String(base.prefix(160))).\(originalExtension)"
+            return name
+        }
+        return String(name.prefix(180))
     }
 
     func saveDeepSeekKey() {
@@ -394,8 +429,12 @@ final class AppModel: ObservableObject {
             await ContentExtractor.extract(from: url)
         }.value
         let suggestionEngine = engine
+        let userProfile = userProfileStore.snapshot
+        let academicTopic = suggestionEngine.specificTopicMatch(
+            for: url, content: content, profile: userProfile
+        )
         let topic = await Task.detached(priority: .userInitiated) {
-            suggestionEngine.topicName(for: url, content: content)
+            suggestionEngine.topicName(for: url, content: content, profile: userProfile)
         }.value
         let learned = learningStore.recommendation(for: url, content: content, roots: roots)
         let profiles = folderKnowledgeProfiles
@@ -404,6 +443,15 @@ final class AppModel: ObservableObject {
         }.value : nil
         let strongTitleCategory = suggestionEngine.strongTitleCategoryName(for: url)
         let knowledge = knowledgeCandidate.flatMap { candidate in
+            if let academicTopic {
+                if suggestionEngine.destination(
+                    candidate.destination,
+                    matchesCategoryNamed: academicTopic.folderName
+                ) || candidate.evidenceChannels.contains("文件名/专属目录名") {
+                    return candidate
+                }
+                return nil
+            }
             guard let strongTitleCategory else { return candidate }
             return suggestionEngine.destination(
                 candidate.destination,
@@ -418,13 +466,16 @@ final class AppModel: ObservableObject {
         // must first recur across three distinct files. Creation still requires
         // an explicit user confirmation.
         let allowCreatingFolder = learned == nil
-            && (suggestionEngine.stableNewFolderName(for: url, content: content) != nil || novelThemeReady)
+            && (suggestionEngine.stableNewFolderName(
+                for: url, content: content, profile: userProfile
+            ) != nil || novelThemeReady)
         var fallback = await Task.detached(priority: .userInitiated) {
             suggestionEngine.suggest(
                 for: url,
                 content: content,
                 roots: roots,
-                allowCreatingFolder: allowCreatingFolder
+                allowCreatingFolder: allowCreatingFolder,
+                profile: userProfile
             )
         }.value
         if let learned {
@@ -461,12 +512,33 @@ final class AppModel: ObservableObject {
             fallback: fallback,
             hasGroundedRecommendation: learned != nil || knowledge != nil
         )
-        let suggestion = sanitizeFolderCreation(
+        var suggestion = sanitizeFolderCreation(
             refined,
             fallback: fallback,
             allowCreatingFolder: allowCreatingFolder
         )
+        if let fileName = FileNameSuggester.suggest(
+            source: url,
+            content: content,
+            academic: academicTopic,
+            preferredSeparator: learningStore.preferredFileNameSeparator
+        ) {
+            suggestion = FileSuggestion(
+                id: suggestion.id,
+                source: suggestion.source,
+                destinationFolder: suggestion.destinationFolder,
+                proposedFolderName: suggestion.proposedFolderName,
+                reason: suggestion.reason + "；命名建议：" + fileName.reason,
+                summary: suggestion.summary,
+                confidence: max(suggestion.confidence, fileName.confidence),
+                createsFolder: suggestion.createsFolder,
+                detectedAt: suggestion.detectedAt,
+                proposedFileName: fileName.fileName
+            )
+        }
         learningSummary = learningStore.summary
+        userProfileStore.observe(source: url, content: content)
+        userProfileSummary = userProfileStore.snapshot.summary
         suggestions.append(suggestion)
         suggestions = SeriesConsensus.consolidate(suggestions, roots: roots)
         let emittedSuggestion = suggestions.first(where: { $0.id == suggestion.id }) ?? suggestion
@@ -482,7 +554,8 @@ final class AppModel: ObservableObject {
                     destination: $0.finalDestinationFolder.path,
                     reason: $0.reason,
                     confidence: $0.confidence,
-                    createsFolder: $0.createsFolder
+                    createsFolder: $0.createsFolder,
+                    suggestedFileName: $0.proposedFileName
                 )
             }
         ))
@@ -622,6 +695,7 @@ final class AppModel: ObservableObject {
             if documentsRoot.standardizedFileURL.path != auditedPath { roots = [documentsRoot] }
         }
         let suggestionEngine = engine
+        let auditUserProfile = userProfileStore.snapshot
         var added = 0
         for outlier in outliers {
             if let learned = learningStore.recommendation(
@@ -674,7 +748,11 @@ final class AppModel: ObservableObject {
                 }
                 continue
             }
-            let topic = suggestionEngine.topicName(for: outlier.document.url, content: outlier.document.content)
+            let topic = suggestionEngine.topicName(
+                for: outlier.document.url,
+                content: outlier.document.content,
+                profile: auditUserProfile
+            )
             let novelThemeReady = learningStore.observeNovelTheme(
                 source: outlier.document.url,
                 content: outlier.document.content,
@@ -682,7 +760,8 @@ final class AppModel: ObservableObject {
             )
             let allowCreatingFolder = suggestionEngine.stableNewFolderName(
                 for: outlier.document.url,
-                content: outlier.document.content
+                content: outlier.document.content,
+                profile: auditUserProfile
             ) != nil || novelThemeReady
             let fallback = await Task.detached(priority: .userInitiated) {
                 suggestionEngine.suggest(
@@ -690,7 +769,8 @@ final class AppModel: ObservableObject {
                     content: outlier.document.content,
                     roots: roots,
                     excludingFolders: Set([auditedPath]),
-                    allowCreatingFolder: allowCreatingFolder
+                    allowCreatingFolder: allowCreatingFolder,
+                    profile: auditUserProfile
                 )
             }.value
             let themes = outlier.commonTerms.isEmpty ? "多数文件主题" : outlier.commonTerms.joined(separator: "、")
@@ -795,6 +875,8 @@ final class AppModel: ObservableObject {
             return
         }
         folderKnowledgeProfiles = profiles
+        userProfileStore.rebuild(from: profiles)
+        userProfileSummary = userProfileStore.snapshot.summary
         await Task.detached(priority: .utility) {
             FolderKnowledgeIndex.save(profiles)
         }.value
@@ -815,6 +897,8 @@ final class AppModel: ObservableObject {
         }).value else { return }
         folderKnowledgeProfiles.removeAll { $0.path == profile.path }
         folderKnowledgeProfiles.append(profile)
+        userProfileStore.rebuild(from: folderKnowledgeProfiles)
+        userProfileSummary = userProfileStore.snapshot.summary
         let profiles = folderKnowledgeProfiles
         await Task.detached(priority: .utility) { FolderKnowledgeIndex.save(profiles) }.value
         folderKnowledgeStatus = "已更新“\(folder.lastPathComponent)”：抽样 \(profile.sampledFiles) 个文件，主主题覆盖 \(profile.dominantFiles) 个，一致度 \(Int(profile.coherence * 100))%。"

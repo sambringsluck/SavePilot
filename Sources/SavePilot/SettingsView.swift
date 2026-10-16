@@ -111,6 +111,9 @@ struct SettingsView: View {
                 Label(model.learningSummary, systemImage: "brain.head.profile")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                Label(model.userProfileSummary, systemImage: "person.text.rectangle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 Button("重建已有文件夹内容索引") {
                     model.rebuildFolderKnowledge()
                 }

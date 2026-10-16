@@ -157,10 +157,12 @@ private struct SuggestionDetail: View {
     @EnvironmentObject private var model: AppModel
     let suggestion: FileSuggestion
     @State private var editedPath: String
+    @State private var editedFileName: String
 
     init(suggestion: FileSuggestion) {
         self.suggestion = suggestion
         _editedPath = State(initialValue: suggestion.finalDestinationFolder.path)
+        _editedFileName = State(initialValue: suggestion.proposedFileName)
     }
 
     var body: some View {
@@ -205,7 +207,7 @@ private struct SuggestionDetail: View {
                         TextField("~/Documents/目标文件夹", text: $editedPath)
                             .textFieldStyle(.roundedBorder)
                             .font(.system(.body, design: .monospaced))
-                            .onSubmit { model.confirmEditedPath(editedPath, for: suggestion) }
+                            .onSubmit { model.confirmEditedPath(editedPath, fileName: editedFileName, for: suggestion) }
                         HStack {
                             Label(
                                 editedFolderExists ? "目录已存在" : "目录不存在，确认后新建",
@@ -215,7 +217,7 @@ private struct SuggestionDetail: View {
                             .foregroundStyle(editedPathIsValid ? Color.secondary : Color.red)
                             Spacer()
                             Button("按此路径存放") {
-                                model.confirmEditedPath(editedPath, for: suggestion)
+                                model.confirmEditedPath(editedPath, fileName: editedFileName, for: suggestion)
                             }
                             .disabled(!editedPathIsValid)
                         }
@@ -231,12 +233,39 @@ private struct SuggestionDetail: View {
                         .padding(8)
                 }
 
+                GroupBox("推荐文件名") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        TextField(suggestion.source.lastPathComponent, text: $editedFileName)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(.body, design: .monospaced))
+                        HStack {
+                            if editedFileName != suggestion.source.lastPathComponent {
+                                Label("将从“\(suggestion.source.lastPathComponent)”重命名", systemImage: "pencil.and.outline")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                Label("保持原文件名", systemImage: "doc")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button("使用原名") { editedFileName = suggestion.source.lastPathComponent }
+                        }
+                        Text("扩展名会强制保留；只有确认后才会重命名。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(8)
+                }
+
                 HStack {
                     Button("在 Finder 中查看") { model.reveal(suggestion.source) }
                     Spacer()
                     Button("保留原位") { model.dismiss(suggestion) }
                     Button("选择其他位置…") { model.chooseAndConfirm(suggestion) }
-                    Button(isKeepingOriginalLocation ? "确认保留原位" : "确认存放") { model.confirm(suggestion) }
+                    Button(isKeepingOriginalLocationAndName ? "确认保留原位" : "确认存放") {
+                        model.confirm(suggestion, fileName: editedFileName)
+                    }
                         .buttonStyle(.borderedProminent)
                         .keyboardShortcut(.defaultAction)
                 }
@@ -258,8 +287,9 @@ private struct SuggestionDetail: View {
         return FileManager.default.fileExists(atPath: expandedEditedPath, isDirectory: &isDirectory) && isDirectory.boolValue
     }
 
-    private var isKeepingOriginalLocation: Bool {
+    private var isKeepingOriginalLocationAndName: Bool {
         suggestion.source.deletingLastPathComponent().standardizedFileURL == suggestion.finalDestinationFolder.standardizedFileURL
+            && editedFileName == suggestion.source.lastPathComponent
     }
 }
 

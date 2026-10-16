@@ -24,11 +24,40 @@ struct FileSuggestion: Identifiable, Hashable {
     let confidence: Double
     let createsFolder: Bool
     let detectedAt: Date
+    let proposedFileName: String
+
+    init(
+        id: UUID,
+        source: URL,
+        destinationFolder: URL,
+        proposedFolderName: String,
+        reason: String,
+        summary: String,
+        confidence: Double,
+        createsFolder: Bool,
+        detectedAt: Date,
+        proposedFileName: String? = nil
+    ) {
+        self.id = id
+        self.source = source
+        self.destinationFolder = destinationFolder
+        self.proposedFolderName = proposedFolderName
+        self.reason = reason
+        self.summary = summary
+        self.confidence = confidence
+        self.createsFolder = createsFolder
+        self.detectedAt = detectedAt
+        self.proposedFileName = proposedFileName ?? source.lastPathComponent
+    }
 
     var finalDestinationFolder: URL {
         createsFolder
             ? destinationFolder.appendingPathComponent(proposedFolderName, isDirectory: true)
             : destinationFolder
+    }
+
+    var finalDestinationURL: URL {
+        finalDestinationFolder.appendingPathComponent(proposedFileName)
     }
 }
 

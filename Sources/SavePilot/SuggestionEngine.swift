@@ -32,7 +32,8 @@ struct SuggestionEngine {
         content: ExtractedContent,
         roots: [URL],
         excludingFolders: Set<String> = [],
-        allowCreatingFolder: Bool = false
+        allowCreatingFolder: Bool = false,
+        profile: UserProfileSnapshot? = nil
     ) -> FileSuggestion {
         let evidence = "\(source.lastPathComponent) \(content.text)".lowercased()
         // Folder-name routing uses the filename only. Automatically extracted
@@ -41,22 +42,39 @@ struct SuggestionEngine {
         // win with misleading confidence.
         let retrievalEvidence = source.deletingPathExtension().lastPathComponent.lowercased()
         let category = bestCategory(for: source, evidence: evidence)
+        let strongTitleCategory = strongTitleCategoryName(for: source)
+        let academic = (strongTitleCategory == nil || strongTitleCategory == "学习")
+            ? AcademicSubjectClassifier.classify(source: source, content: content, profile: profile)
+            : nil
         let existingFolders = discoverFolders(in: roots, excludingFolders: excludingFolders)
-        let existing = bestExistingFolder(category: category, evidence: retrievalEvidence, folders: existingFolders, sourceExtension: source.pathExtension.lowercased())
+        let existing = bestAcademicFolder(match: academic, folders: existingFolders)
+            ?? bestExistingFolder(category: category, evidence: retrievalEvidence, folders: existingFolders, sourceExtension: source.pathExtension.lowercased())
 
         let destination = existing ?? bestInbox(in: existingFolders) ?? source.deletingLastPathComponent()
-        let createsFolder = existing == nil && allowCreatingFolder && category.folder != "待整理"
-        let folderName = createsFolder ? category.folder : ""
+        let proposedTopic = academic?.folderName ?? category.folder
+        let createsFolder = existing == nil && allowCreatingFolder && proposedTopic != "待整理"
+        let folderName = createsFolder ? proposedTopic : ""
         let reason: String
         if let existing {
-            reason = "内容与现有文件夹“\(existing.lastPathComponent)”最匹配（\(content.kind)）"
+            if let academic {
+                reason = "识别为“学习 › \(academic.folderName)”，并与现有文件夹“\(existing.lastPathComponent)”匹配（证据：\(academic.evidence.joined(separator: "、"))）"
+            } else {
+                reason = "内容与现有文件夹“\(existing.lastPathComponent)”最匹配（\(content.kind)）"
+            }
         } else if createsFolder {
-            reason = "没有找到足够匹配的现有目录，建议新建“\(category.folder)”（\(content.kind)）"
+            if let academic {
+                reason = "层级识别为“学习 › \(academic.folderName)”，建议新建学科文件夹“\(academic.folderName)”（证据：\(academic.evidence.joined(separator: "、"))）"
+            } else {
+                reason = "没有找到足够匹配的现有目录，建议新建“\(category.folder)”（\(content.kind)）"
+            }
         } else {
             reason = "现有目录中没有足够可靠的匹配，建议暂时保留原位；可直接修改目标路径来教会我（\(content.kind)）"
         }
 
-        let confidence = confidenceFor(category: category, evidence: evidence, matchedExisting: existing != nil)
+        let confidence = max(
+            confidenceFor(category: category, evidence: evidence, matchedExisting: existing != nil),
+            academic?.confidence ?? 0
+        )
         return FileSuggestion(
             id: UUID(),
             source: source,
@@ -70,8 +88,19 @@ struct SuggestionEngine {
         )
     }
 
-    func topicName(for source: URL, content: ExtractedContent) -> String {
-        bestCategory(for: source, evidence: "\(source.lastPathComponent) \(content.text)".lowercased()).folder
+    func topicName(for source: URL, content: ExtractedContent, profile: UserProfileSnapshot? = nil) -> String {
+        if let academic = AcademicSubjectClassifier.classify(source: source, content: content, profile: profile) {
+            return academic.folderName
+        }
+        return bestCategory(for: source, evidence: "\(source.lastPathComponent) \(content.text)".lowercased()).folder
+    }
+
+    func specificTopicMatch(
+        for source: URL,
+        content: ExtractedContent,
+        profile: UserProfileSnapshot? = nil
+    ) -> AcademicSubjectMatch? {
+        AcademicSubjectClassifier.classify(source: source, content: content, profile: profile)
     }
 
     func strongTitleCategoryName(for source: URL) -> String? {
@@ -91,6 +120,16 @@ struct SuggestionEngine {
     }
 
     func destination(_ destination: URL, matchesCategoryNamed name: String) -> Bool {
+        let academicAliases = AcademicSubjectClassifier.aliases(for: name)
+        if !academicAliases.isEmpty {
+            return destination.pathComponents.suffix(2).contains { component in
+                let normalized = component.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+                return academicAliases.contains { alias in
+                    let alias = alias.lowercased()
+                    return alias.contains(where: { !$0.isASCII }) ? normalized.contains(alias) : normalized == alias
+                }
+            }
+        }
         guard let category = categories.first(where: { $0.folder == name }) else { return false }
         return destination.pathComponents.suffix(2).contains { component in
             let normalized = component.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
@@ -106,9 +145,19 @@ struct SuggestionEngine {
     /// after the file. A title keyword is sufficient; otherwise the body needs
     /// at least two independent category signals. Format categories are stable
     /// by construction (for example, 安装包 or 音视频).
-    func stableNewFolderName(for source: URL, content: ExtractedContent) -> String? {
+    func stableNewFolderName(
+        for source: URL,
+        content: ExtractedContent,
+        profile: UserProfileSnapshot? = nil
+    ) -> String? {
         let evidence = "\(source.lastPathComponent) \(content.summary) \(content.entities.joined(separator: " ")) \(String(content.text.prefix(4_000)))".lowercased()
         let title = source.deletingPathExtension().lastPathComponent.lowercased()
+        if let strongTitle = strongTitleCategoryName(for: source), strongTitle != "学习" {
+            return strongTitle
+        }
+        if let academic = AcademicSubjectClassifier.classify(source: source, content: content, profile: profile) {
+            return academic.folderName
+        }
         if isHomeworkTitle(title) { return "学习" }
         let category = bestCategory(for: source, evidence: evidence)
         guard category.folder != "待整理" else { return nil }
@@ -129,6 +178,10 @@ struct SuggestionEngine {
 
     func isPlausibleModelDestination(source: URL, content: ExtractedContent, destination: URL) -> Bool {
         if destination.standardizedFileURL == source.deletingLastPathComponent().standardizedFileURL { return true }
+        if let academic = AcademicSubjectClassifier.classify(source: source, content: content),
+           self.destination(destination, matchesCategoryNamed: academic.folderName) {
+            return true
+        }
         let evidence = "\(source.lastPathComponent) \(content.summary) \(String(content.text.prefix(1_200)))".lowercased()
         let category = bestCategory(for: source, evidence: evidence)
         if folderNameMatches(category: category, folder: destination) { return true }
@@ -237,6 +290,21 @@ struct SuggestionEngine {
         // retrieval therefore requires auditable lexical evidence here; an
         // enabled LLM may still refine the conservative result afterwards.
         return nil
+    }
+
+    private func bestAcademicFolder(match: AcademicSubjectMatch?, folders: [URL]) -> URL? {
+        guard let match else { return nil }
+        let aliases = AcademicSubjectClassifier.aliases(for: match.folderName)
+        return folders
+            .filter { folder in
+                let name = folder.lastPathComponent.lowercased()
+                return aliases.contains { alias in
+                    let alias = alias.lowercased()
+                    return alias.contains(where: { !$0.isASCII }) ? name.contains(alias) : name == alias
+                }
+            }
+            .sorted { $0.pathComponents.count < $1.pathComponents.count }
+            .first
     }
 
     private func isGenericTechnicalFolder(_ folder: URL) -> Bool {

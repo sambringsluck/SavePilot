@@ -43,7 +43,8 @@ enum SeriesConsensus {
                     summary: original.summary,
                     confidence: max(0.72, original.confidence),
                     createsFolder: false,
-                    detectedAt: original.detectedAt
+                    detectedAt: original.detectedAt,
+                    proposedFileName: original.proposedFileName
                 )
             }
         }
