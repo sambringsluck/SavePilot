@@ -8,6 +8,12 @@ struct DocumentRelationship: Sendable {
     let evidence: [String]
 }
 
+struct NamedDocumentGroupRecommendation: Sendable {
+    let topicName: String
+    let peerNames: [String]
+    let score: Double
+}
+
 /// Models file-to-file affinity independently of where either file currently
 /// lives.  Directories are treated as mutable labels, not ground truth.  A
 /// high-confidence two-file group needs a structured topic signature; generic
@@ -115,6 +121,48 @@ enum DocumentRelationshipEngine {
         )
     }
 
+    /// Resolve a structured project relation against the already extracted
+    /// corpus before a suggestion is shown. This prevents a weak directory
+    /// match from flashing first and being corrected only after its peer is
+    /// processed later in the queue.
+    static func namedRecommendation(
+        for source: URL,
+        content: ExtractedContent,
+        corpus: [String: ExtractedContent]
+    ) -> NamedDocumentGroupRecommendation? {
+        var matches: [String: [(name: String, score: Double)]] = [:]
+        let sourcePath = source.standardizedFileURL.path
+        for (path, peerContent) in corpus where path != sourcePath {
+            let peerURL = URL(fileURLWithPath: path)
+            guard let relation = compare(
+                lhsURL: source, lhs: content,
+                rhsURL: peerURL, rhs: peerContent
+            ), let topic = relation.topicName, relation.score >= 0.80 else { continue }
+            matches[topic, default: []].append((peerURL.deletingPathExtension().lastPathComponent, relation.score))
+        }
+        let ranked = matches.map { topic, peers in
+            (
+                topic: topic,
+                peers: peers,
+                strength: peers.reduce(0) { $0 + $1.score } / Double(peers.count)
+            )
+        }.sorted {
+            if $0.peers.count != $1.peers.count { return $0.peers.count > $1.peers.count }
+            return $0.strength > $1.strength
+        }
+        guard let best = ranked.first else { return nil }
+        // Abstain when two project signatures have the same support and
+        // nearly identical strength instead of making an arbitrary choice.
+        if let second = ranked.dropFirst().first,
+           second.peers.count == best.peers.count,
+           best.strength - second.strength < 0.04 { return nil }
+        return NamedDocumentGroupRecommendation(
+            topicName: best.topic,
+            peerNames: Array(best.peers.sorted { $0.score > $1.score }.prefix(3).map(\.name)),
+            score: best.strength
+        )
+    }
+
     private static func normalizedText(url: URL, content: ExtractedContent) -> String {
         "\(url.deletingPathExtension().lastPathComponent) \(content.summary) \(content.entities.joined(separator: " ")) \(String(content.text.prefix(12_000)))"
             .lowercased()
@@ -165,6 +213,7 @@ enum DocumentRelationshipEngine {
         "into", "file", "document", "page", "http", "https", "com", "www", "model", "article",
         "chapter", "section", "part", "content", "type", "role", "message", "response", "question",
         "export", "scan", "scanned", "img", "image",
+        "author", "unknown", "final", "draft", "copyright", "footer", "header", "generated",
         "answer", "user", "assistant", "conversation", "because", "about", "which", "their", "there",
         "的", "了", "和", "与", "及", "是", "在", "为", "对", "将", "中", "有", "一个", "文件",
         "文档", "内容", "问题", "回答", "用户", "可以", "这个", "进行", "需要", "我们", "认为"

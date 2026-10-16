@@ -29,6 +29,23 @@ struct FolderKnowledgeRecommendation: Sendable {
     let confidence: Double
 }
 
+struct FolderHierarchyConflict: Sendable {
+    let childPath: String
+    let parentPath: String
+    let childSubject: String
+    let parentSubject: String
+    let confidence: Double
+}
+
+struct FolderRelocationPlan: Sendable {
+    let destinationContainer: URL
+    let finalFolderName: String
+
+    var finalFolder: URL {
+        destinationContainer.appendingPathComponent(finalFolderName, isDirectory: true)
+    }
+}
+
 enum FolderKnowledgeIndex {
     private static let supportedExtensions: Set<String> = [
         "txt", "md", "markdown", "rtf", "pdf", "docx", "pptx", "xlsx", "pages",
@@ -85,9 +102,11 @@ enum FolderKnowledgeIndex {
         profiles: [FolderKnowledgeProfile],
         excludingFolders: Set<String> = []
     ) -> FolderKnowledgeRecommendation? {
+        let conflictedPaths = Set(hierarchyConflicts(in: profiles).map(\.childPath))
         let initiallyUsable = profiles.filter { profile in
             let path = URL(fileURLWithPath: profile.path).standardizedFileURL.path
             return !excludingFolders.contains(where: { path == $0 || path.hasPrefix($0 + "/") })
+                && !conflictedPaths.contains(where: { path == $0 || path.hasPrefix($0 + "/") })
                 && path != source.deletingLastPathComponent().standardizedFileURL.path
         }
 
@@ -122,6 +141,7 @@ enum FolderKnowledgeIndex {
 
         let sourceExtension = source.pathExtension.lowercased()
         let sourceNameTerms = Set(tokenCounts(source.deletingPathExtension().lastPathComponent).keys)
+        let entityTerms = Set(content.entities.flatMap { tokenCounts($0).keys })
         let genericTitleTerms: Set<String> = [
             "report", "final", "draft", "copy", "new", "untitled", "version",
             "image", "photo", "scan", "screenshot", "export"
@@ -160,11 +180,14 @@ enum FolderKnowledgeIndex {
         }
 
         let evidenceCandidates = scored.map {
+            let hasEntityAnchor = $0.0.hyperedges.contains { edge in
+                !entityTerms.intersection(edge.members).isEmpty
+            }
             let topicRoutingAllowed = EvidenceRanker.allowsTopicOnlyRouting(
                 coherence: $0.0.coherence,
                 sampledFiles: $0.0.sampledFiles,
                 pathMatch: $0.3
-            )
+            ) && ($0.0.coherence >= 0.50 || $0.3 >= 0.12 || hasEntityAnchor)
             return FolderEvidenceCandidate(
                 identifier: $0.0.path,
                 semantic: topicRoutingAllowed ? $0.1 : 0,
@@ -209,11 +232,14 @@ enum FolderKnowledgeIndex {
             let matches = specificSourceNameTerms.intersection(candidate.0.weights.keys).sorted()
             return (candidate, matches)
         }.filter {
-            $0.1.count >= 2 && EvidenceRanker.allowsTopicOnlyRouting(
+            let hasEntityAnchor = $0.0.0.hyperedges.contains { edge in
+                !entityTerms.intersection(edge.members).isEmpty
+            }
+            return $0.1.count >= 2 && EvidenceRanker.allowsTopicOnlyRouting(
                 coherence: $0.0.0.coherence,
                 sampledFiles: $0.0.0.sampledFiles,
                 pathMatch: $0.0.3
-            )
+            ) && ($0.0.0.coherence >= 0.50 || $0.0.3 >= 0.12 || hasEntityAnchor)
         }
             .sorted {
                 if $0.1.count != $1.1.count { return $0.1.count > $1.1.count }
@@ -241,12 +267,16 @@ enum FolderKnowledgeIndex {
         // global coherence (for example an author name plus a research topic).
         let explicitEdge = scored
             .filter {
-                $0.2 >= 0.12 && $0.1 >= 0.06 && $0.5.count >= 3
+                let hasEntityAnchor = $0.0.hyperedges.contains { edge in
+                    !entityTerms.intersection(edge.members).isEmpty
+                }
+                return $0.2 >= 0.12 && $0.1 >= 0.06 && $0.5.count >= 3
                     && EvidenceRanker.allowsTopicOnlyRouting(
                         coherence: $0.0.coherence,
                         sampledFiles: $0.0.sampledFiles,
                         pathMatch: $0.3
                     )
+                    && ($0.0.coherence >= 0.50 || $0.3 >= 0.12 || hasEntityAnchor)
             }
             .sorted { $0.2 > $1.2 }
         if let best = explicitEdge.first {
@@ -273,6 +303,93 @@ enum FolderKnowledgeIndex {
             evidenceChannels: ranking.channels,
             confidence: ranking.confidence
         )
+    }
+
+    /// Builds explicit child-folder -> parent-folder semantic edges. A child
+    /// whose stable content subject conflicts with an explicitly named parent
+    /// (for example economics material under `lang`) is kept in the index for
+    /// auditing, but is not used as a destination until the hierarchy is fixed.
+    static func hierarchyConflicts(in profiles: [FolderKnowledgeProfile]) -> [FolderHierarchyConflict] {
+        profiles.compactMap { profile in
+            guard profile.sampledFiles >= 2 else { return nil }
+            let child = URL(fileURLWithPath: profile.path, isDirectory: true).standardizedFileURL
+            let parent = child.deletingLastPathComponent()
+            guard parent.path != child.path,
+                  let parentMatch = AcademicSubjectClassifier.classify(
+                    title: parent.lastPathComponent, body: ""
+                  )
+            else { return nil }
+            let body = profile.weights.sorted { $0.value > $1.value }
+                .prefix(100).map(\.key).joined(separator: " ")
+            let classifiedChild = AcademicSubjectClassifier.classify(
+                title: child.lastPathComponent, body: body
+            ).map { (subject: $0.folderName, confidence: $0.confidence) }
+            let childMatch = classifiedChild ?? projectSubjectHint(
+                folderName: child.lastPathComponent, body: body
+            )
+            guard let childMatch,
+                  childMatch.subject != parentMatch.folderName,
+                  childMatch.confidence >= 0.70 else { return nil }
+            return FolderHierarchyConflict(
+                childPath: child.path,
+                parentPath: parent.path,
+                childSubject: childMatch.subject,
+                parentSubject: parentMatch.folderName,
+                confidence: min(childMatch.confidence, parentMatch.confidence)
+            )
+        }
+    }
+
+    static func hierarchyConflict(
+        containing destination: URL,
+        profiles: [FolderKnowledgeProfile]
+    ) -> FolderHierarchyConflict? {
+        let path = destination.standardizedFileURL.path
+        return hierarchyConflicts(in: profiles).first {
+            path == $0.childPath || path.hasPrefix($0.childPath + "/")
+        }
+    }
+
+    static func relocationPlan(
+        for conflict: FolderHierarchyConflict,
+        root: URL,
+        projectName: String?,
+        fileManager: FileManager = .default
+    ) -> FolderRelocationPlan {
+        let child = URL(fileURLWithPath: conflict.childPath, isDirectory: true).standardizedFileURL
+        if let projectName {
+            let project = root.appendingPathComponent(projectName, isDirectory: true)
+            if fileManager.fileExists(atPath: project.path) {
+                return FolderRelocationPlan(
+                    destinationContainer: project,
+                    finalFolderName: child.lastPathComponent
+                )
+            }
+            return FolderRelocationPlan(
+                destinationContainer: root,
+                finalFolderName: projectName
+            )
+        }
+        return FolderRelocationPlan(
+            destinationContainer: root,
+            finalFolderName: child.lastPathComponent
+        )
+    }
+
+    private static func projectSubjectHint(
+        folderName: String,
+        body: String
+    ) -> (subject: String, confidence: Double)? {
+        let nameTokens = Set(folderName.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init))
+        let normalizedBody = body.lowercased()
+        // Acronyms are accepted only from the folder name and must be
+        // independently confirmed by sampled content. This catches a stable
+        // project identity without treating incidental body mentions as truth.
+        if nameTokens.contains("ieo"),
+           ["economics", "economic", "经济", "olympiad", "奥赛"].filter({ normalizedBody.contains($0) }).count >= 2 {
+            return ("经济学", 0.90)
+        }
+        return nil
     }
 
     static func buildProfile(folder: URL) async -> FolderKnowledgeProfile? {
@@ -590,6 +707,8 @@ enum FolderKnowledgeIndex {
         "information", "claim", "claims", "answer", "conversation", "situation", "method", "tools",
         "new", "bad", "wrong", "correct", "simple", "common", "times", "piece", "behind", "quite",
         "的", "了", "和", "与", "及", "是", "在", "为", "对", "将", "中", "有", "一个", "文件", "文档", "内容",
-        "什么", "为什么", "不同", "重要", "问题", "可以", "这个", "没有", "进行", "以及", "通过", "需要"
+        "什么", "为什么", "不同", "重要", "问题", "可以", "这个", "没有", "进行", "以及", "通过", "需要",
+        "达到", "比例", "能够", "情况", "之间", "其中", "对于", "假设", "固定", "非常", "设定", "可能",
+        "结果", "使用", "形成", "表示", "分析", "研究", "相关", "包括", "主要", "如果", "由于", "因此"
     ]
 }

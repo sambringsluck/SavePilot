@@ -1,6 +1,32 @@
 import Foundation
 
 enum OllamaRecommender {
+    struct TagsResponse: Decodable {
+        struct Model: Decodable { let name: String }
+        let models: [Model]
+    }
+
+    static func setupStatus(requiredModels: [String]) async -> String {
+        guard let url = URL(string: "http://127.0.0.1:11434/api/tags") else { return "Ollama 地址无效" }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 3
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard (response as? HTTPURLResponse)?.statusCode == 200,
+                  let tags = try? JSONDecoder().decode(TagsResponse.self, from: data)
+            else { return "Ollama 服务响应异常" }
+            let installed = Set(tags.models.flatMap { [$0.name, $0.name.replacingOccurrences(of: ":latest", with: "")] })
+            let missing = requiredModels.filter { model in
+                !installed.contains(model) && !installed.contains(model + ":latest")
+            }
+            return missing.isEmpty
+                ? "Ollama 高精度配置已就绪"
+                : "Ollama 已运行，缺少模型：\(missing.joined(separator: "、"))"
+        } catch {
+            return "Ollama 未运行；仍可使用内置降级模式"
+        }
+    }
+
     struct ChatRequest: Encodable {
         struct Message: Encodable {
             let role: String

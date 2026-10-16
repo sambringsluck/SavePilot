@@ -46,6 +46,8 @@ After the file becomes stable on disk:
 
 A project-intent gate separates topical similarity from destination purpose. A mixed submission folder may contain copied references that resemble an incoming file; that resemblance is insufficient unless the folder has a coherent majority theme or the current file names the project anchor.
 
+If the chosen candidate folder is itself under an incompatible parent, SavePilot does not discard a correct content match. It creates a separate, independently confirmable relocation suggestion for the whole candidate folder and explains its planned final path on the file suggestion. Processing the file first is safe because it joins the same folder object and travels with that folder later.
+
 ### 4.3 Folder audit
 
 The user can select any folder. SavePilot builds a majority-topic profile, expands the sample when early files disagree, identifies strong file and child-folder outliers, and recommends alternative paths without changing the originals automatically. Parent-folder intent and child-folder content are scored separately so implementation artifacts do not mask a misplaced project.
@@ -124,8 +126,8 @@ Maintain a private, local-only golden set of user-approved cases such as physics
 - P1: richer date/course/instructor naming templates and a user-facing naming-style editor.
 - P1: profile inspector with per-subject evidence, corrections, and opt-out controls.
 - P1: export/import anonymized training events and a local golden-set runner.
-- P2: optional local embedding model for multilingual semantic retrieval, evaluated against the same abstention gates.
-- P2: optional top-candidate reranker behind a provider interface; local Ollama first, cloud APIs only by explicit opt-in.
+- Delivered: optional local Ollama multilingual embedding retrieval, restricted to top-k candidate recall and evaluated behind the same abstention gates.
+- Delivered: local Ollama top-candidate review with explicit model readiness diagnostics and safe fallback.
 - P2: active learning that asks for labels only on high-value uncertain cases.
 - P2: app-specific integrations where a source application exposes a supported automation or extension API.
 - Delivered compatibility baseline: Python GUI/CLI, local indexing, polling monitor, OpenXML, optional PDF/OCR, and confirmation-safe moves on Windows/Linux/macOS.

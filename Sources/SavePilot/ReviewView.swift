@@ -144,12 +144,17 @@ private struct SuggestionRow: View {
     }
 
     private var iconName: String {
+        if isDirectory { return "folder" }
         switch suggestion.source.pathExtension.lowercased() {
         case "pdf": return "doc.richtext"
         case "png", "jpg", "jpeg", "heic": return "photo"
         case "zip", "rar", "7z": return "archivebox"
         default: return "doc"
         }
+    }
+
+    private var isDirectory: Bool {
+        (try? suggestion.source.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
     }
 }
 
@@ -234,7 +239,7 @@ private struct SuggestionDetail: View {
                 }
 
                 if suggestion.proposedFileName != suggestion.source.lastPathComponent {
-                    GroupBox("推荐文件名") {
+                    GroupBox(isDirectory ? "推荐文件夹名称" : "推荐文件名") {
                         VStack(alignment: .leading, spacing: 10) {
                             TextField(suggestion.source.lastPathComponent, text: $editedFileName)
                                 .textFieldStyle(.roundedBorder)
@@ -245,14 +250,14 @@ private struct SuggestionDetail: View {
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                 } else {
-                                    Label("保持原文件名", systemImage: "doc")
+                                    Label(isDirectory ? "保持原文件夹名称" : "保持原文件名", systemImage: isDirectory ? "folder" : "doc")
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                 }
                                 Spacer()
                                 Button("使用原名") { editedFileName = suggestion.source.lastPathComponent }
                             }
-                            Text("扩展名会强制保留；只有确认后才会重命名。")
+                            Text(isDirectory ? "确认后会移动整个文件夹及其内容；可随时撤销。" : "扩展名会强制保留；只有确认后才会重命名。")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -292,6 +297,10 @@ private struct SuggestionDetail: View {
     private var isKeepingOriginalLocationAndName: Bool {
         suggestion.source.deletingLastPathComponent().standardizedFileURL == suggestion.finalDestinationFolder.standardizedFileURL
             && editedFileName == suggestion.source.lastPathComponent
+    }
+
+    private var isDirectory: Bool {
+        (try? suggestion.source.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
     }
 }
 

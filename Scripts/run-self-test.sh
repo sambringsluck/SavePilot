@@ -13,8 +13,10 @@ swiftc \
   Sources/SavePilot/AdvancedExtractors.swift \
   Sources/SavePilot/ContentExtractor.swift \
   Sources/SavePilot/EvidenceRanker.swift \
+  Sources/SavePilot/FolderKnowledgeIndex.swift \
   Sources/SavePilot/SeriesConsensus.swift \
   Sources/SavePilot/DocumentRelationshipEngine.swift \
+  Sources/SavePilot/OllamaEmbeddingRetriever.swift \
   Sources/SavePilot/SuggestionEngine.swift \
   Sources/SavePilot/LearningStore.swift \
   Sources/SavePilot/FolderAuditEngine.swift \

@@ -30,7 +30,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           python Training/hard_case_corpus.py
-          python Training/evaluate_hard_cases.py Training/generated/savepilot-hard-cases-v1.jsonl
+          python Training/evaluate_hard_cases.py Training/generated/savepilot-hard-cases-v2.jsonl
       - name: Compile Python sources
         run: python -m compileall -q src
       - name: Build universal wheel

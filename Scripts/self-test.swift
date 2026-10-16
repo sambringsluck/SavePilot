@@ -26,10 +26,16 @@ struct SavePilotSelfTest {
         try testMemoryKeepsSeparateTopicsAndHonorsRejection()
         try testNumberedSeriesConsensus()
         try testDocumentRelationshipConsensus()
+        try testRelationshipPrepublishRecommendation()
         try testGenericBridgeCannotContaminateNamedProject()
         try testDocumentRelationshipHardNegative()
+        try testFolderHierarchyRelationships()
+        try testFolderRelocationPlanning()
+        try testLowCoherenceProjectNeedsIdentityAnchor()
+        try testEmbeddingCandidateShortlist()
+        try testFolderRelocationAndUndo()
         try testFileNameSuggestionAndRename()
-        print("SavePilot self-test: 22/22 passed")
+        print("SavePilot self-test: 28/28 passed")
     }
 
     private static func testExistingFolderSuggestion() throws {
@@ -560,6 +566,189 @@ struct SavePilotSelfTest {
             lhsURL: root.appendingPathComponent("van Linden.docx"), lhs: article,
             rhsURL: root.appendingPathComponent("数学竞赛提交.pdf"), rhs: submission
         ) == nil else { throw SelfTestError.failed("author-only hard negative") }
+    }
+
+    private static func testRelationshipPrepublishRecommendation() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let modeling = root.appendingPathComponent("建模2.docx")
+        let finance = root.appendingPathComponent("金融数据问题讨论.md")
+        let modelingContent = ExtractedContent(
+            text: "投资组合模型在风险约束下优化股票资产配置，使预期收益最大，并讨论标准差。",
+            kind: "Office", summary: "投资组合风险收益优化模型"
+        )
+        let financeContent = ExtractedContent(
+            text: "Markowitz portfolio optimization uses stock and bank asset constraints for expected return and volatility risk.",
+            kind: "Markdown", summary: "portfolio model"
+        )
+        let corpus = [finance.standardizedFileURL.path: financeContent]
+        let result = DocumentRelationshipEngine.namedRecommendation(
+            for: modeling, content: modelingContent, corpus: corpus
+        )
+        guard result?.topicName == "数学建模进阶课",
+              result?.peerNames == ["金融数据问题讨论"]
+        else { throw SelfTestError.failed("relationship prepublish recommendation") }
+    }
+
+    private static func testFolderHierarchyRelationships() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let lang = root.appendingPathComponent("lang", isDirectory: true)
+        let ieo = lang.appendingPathComponent("ieo_research", isDirectory: true)
+        let english = lang.appendingPathComponent("english", isDirectory: true)
+        let profiles = [
+            FolderKnowledgeProfile(
+                path: ieo.path,
+                weights: ["economics": 0.22, "market": 0.18, "supply": 0.16, "demand": 0.14],
+                extensions: ["pdf"], sampledFiles: 4, consideredFiles: 4,
+                dominantFiles: 4, coherence: 0.8, hyperedges: [], updatedAt: Date()
+            ),
+            FolderKnowledgeProfile(
+                path: english.path,
+                weights: ["english": 0.22, "grammar": 0.18, "vocabulary": 0.16, "reading": 0.14],
+                extensions: ["pdf"], sampledFiles: 4, consideredFiles: 4,
+                dominantFiles: 4, coherence: 0.8, hyperedges: [], updatedAt: Date()
+            )
+        ]
+        let conflicts = FolderKnowledgeIndex.hierarchyConflicts(in: profiles)
+        guard conflicts.count == 1,
+              conflicts[0].childPath == ieo.standardizedFileURL.path,
+              conflicts[0].parentSubject == "语言",
+              conflicts[0].childSubject == "经济学",
+              FolderKnowledgeIndex.hierarchyConflict(
+                containing: ieo.appendingPathComponent("archive"), profiles: profiles
+              ) != nil,
+              FolderKnowledgeIndex.hierarchyConflict(
+                containing: english, profiles: profiles
+              ) == nil
+        else { throw SelfTestError.failed("folder parent-child relationship graph") }
+    }
+
+    private static func testEmbeddingCandidateShortlist() throws {
+        func profile(_ path: String) -> FolderKnowledgeProfile {
+            FolderKnowledgeProfile(
+                path: path, weights: ["topic": 1], extensions: ["md"],
+                sampledFiles: 4, consideredFiles: 4, dominantFiles: 4,
+                coherence: 0.8, hyperedges: [], updatedAt: Date()
+            )
+        }
+        let physics = profile("/tmp/物理")
+        let history = profile("/tmp/历史")
+        let finance = profile("/tmp/金融")
+        let ranked = EmbeddingCandidateSelector.rank(
+            query: [1, 0, 0],
+            profiles: [history, finance, physics],
+            vectors: [
+                physics.path: [0.96, 0.20, 0],
+                history.path: [0.10, 0.98, 0],
+                finance.path: [0.40, 0.20, 0.89]
+            ],
+            limit: 2
+        )
+        guard ranked.map(\.profile.path) == [physics.path, finance.path],
+              ranked[0].similarity > ranked[1].similarity
+        else { throw SelfTestError.failed("embedding top-k shortlist") }
+    }
+
+    private static func testFolderRelocationPlanning() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let child = root.appendingPathComponent("lang/ieo_research", isDirectory: true)
+        let conflict = FolderHierarchyConflict(
+            childPath: child.path,
+            parentPath: child.deletingLastPathComponent().path,
+            childSubject: "经济学",
+            parentSubject: "语言",
+            confidence: 0.9
+        )
+        let independent = FolderKnowledgeIndex.relocationPlan(
+            for: conflict,
+            root: root,
+            projectName: nil
+        )
+        guard independent.finalFolder.standardizedFileURL.path
+                == root.appendingPathComponent("ieo_research").standardizedFileURL.path else {
+            throw SelfTestError.failed("misplaced child relocation")
+        }
+        let course = root.appendingPathComponent("IEO经济学竞赛", isDirectory: true)
+        try FileManager.default.createDirectory(at: course, withIntermediateDirectories: true)
+        let nested = FolderKnowledgeIndex.relocationPlan(
+            for: conflict,
+            root: root,
+            projectName: "IEO经济学竞赛"
+        )
+        guard nested.finalFolder.standardizedFileURL.path
+                == course.appendingPathComponent("ieo_research").standardizedFileURL.path else {
+            throw SelfTestError.failed("misplaced child existing-project relocation")
+        }
+    }
+
+    private static func testLowCoherenceProjectNeedsIdentityAnchor() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let hill = root.appendingPathComponent("模型训练/丘", isDirectory: true)
+        let physics = root.appendingPathComponent("物理", isDirectory: true)
+        let profiles = [
+            FolderKnowledgeProfile(
+                path: hill.path,
+                weights: ["收益": 0.22, "风险": 0.20, "投资": 0.16, "模型": 0.15],
+                extensions: ["docx"], sampledFiles: 18, consideredFiles: 18,
+                dominantFiles: 12, coherence: 0.39,
+                hyperedges: [FolderKnowledgeHyperedge(
+                    documentName: "有限记忆模型.docx",
+                    members: ["收益", "风险", "投资", "模型", "决策"],
+                    fileExtension: "docx"
+                )], updatedAt: Date()
+            ),
+            FolderKnowledgeProfile(
+                path: physics.path,
+                weights: ["力学": 0.3, "动量": 0.2, "能量": 0.2],
+                extensions: ["pdf"], sampledFiles: 5, consideredFiles: 5,
+                dominantFiles: 5, coherence: 0.8, hyperedges: [], updatedAt: Date()
+            )
+        ]
+        let source = root.appendingPathComponent("建模2.docx")
+        let content = ExtractedContent(
+            text: "马科维茨投资组合优化在风险约束下选择最大收益方案",
+            kind: "Office", summary: "投资组合风险收益优化", entities: ["马科维茨"]
+        )
+        let recommendation = FolderKnowledgeIndex.recommend(
+            source: source,
+            content: content,
+            profiles: profiles
+        )
+        guard recommendation?.destination.standardizedFileURL.path != hill.standardizedFileURL.path else {
+            throw SelfTestError.failed("low-coherence project accepted without identity anchor")
+        }
+    }
+
+    private static func testFolderRelocationAndUndo() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let misplaced = root
+            .appendingPathComponent("lang", isDirectory: true)
+            .appendingPathComponent("ieo_research", isDirectory: true)
+        try FileManager.default.createDirectory(at: misplaced, withIntermediateDirectories: true)
+        let evidence = misplaced.appendingPathComponent("market-structure.md")
+        try Data("supply demand market equilibrium".utf8).write(to: evidence)
+
+        let record = try FileMover.move(
+            misplaced,
+            to: root,
+            preferredFileName: "IEO经济学竞赛"
+        )
+        let relocated = URL(fileURLWithPath: record.destinationPath, isDirectory: true)
+        guard relocated.lastPathComponent == "IEO经济学竞赛",
+              FileManager.default.fileExists(
+                atPath: relocated.appendingPathComponent("market-structure.md").path
+              ),
+              !FileManager.default.fileExists(atPath: misplaced.path)
+        else { throw SelfTestError.failed("whole-folder relocation") }
+
+        try FileMover.undo(record)
+        guard FileManager.default.fileExists(atPath: evidence.path),
+              !FileManager.default.fileExists(atPath: relocated.path)
+        else { throw SelfTestError.failed("whole-folder relocation undo") }
     }
 
     private static func testGenericBridgeCannotContaminateNamedProject() throws {

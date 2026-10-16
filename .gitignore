@@ -5,6 +5,7 @@ dist-cross-platform/
 CrossPlatform/build/
 CrossPlatform/src/*.egg-info/
 CrossPlatform/**/__pycache__/
+Training/__pycache__/
 DerivedData/
 *.xcuserstate
 xcuserdata/

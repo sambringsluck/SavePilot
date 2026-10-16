@@ -11,6 +11,10 @@ SavePilot treats a directory as a mutable label rather than ground truth. Its de
 5. Fuse sparse content retrieval, path evidence, file-level relationships, folder coherence, personal confirmations, and explicit negative feedback.
 6. Abstain when absolute evidence or the winner margin is weak. Never move without confirmation.
 
+The graph is deliberately bounded rather than a blind whole-disk crawl. It covers authorized archive roots, Desktop, Downloads, and configured watch roots. Startup pre-reads up to 160 recent loose files so queue order cannot change the first answer; folder nodes use adaptive, time- and format-diverse majority sampling (normally up to 18 files per folder). System libraries, application bundles, caches, managed media libraries, and build outputs stay outside the graph. Confirmations and corrections update it incrementally.
+
+When a candidate folder's own content matches but its parent purpose conflicts, SavePilot keeps the candidate identity and emits a separate whole-folder relocation proposal. The incoming file still joins that candidate; if handled first, it later travels with the folder. This avoids both rejecting a semantically correct folder and creating a duplicate corrected folder merely because the user processed suggestions out of order.
+
 ## Boundary corpus
 
 `Training/hard_case_corpus.py` creates deterministic positives and hard negatives, including author-name leakage, historical-data/history ambiguity, legal-force/physics-force polysemy, entity ambiguity, broad-finance collisions, generic filenames, OCR spacing, and exported-chat boilerplate. The optional 20-Newsgroups adapter adds public same-class positives and nearby-category hard negatives without committing downloaded text.
@@ -28,5 +32,9 @@ No single model is allowed to decide a move. MTEB covers classification, cluster
 - final margin, consistency, and project-intent gates before showing a recommendation.
 
 The preferred embedding integration is local Ollama `/api/embed`, which returns normalized vectors and supports batching: <https://docs.ollama.com/capabilities/embeddings>. Cloud embeddings or rerank APIs can be provider adapters, but remain opt-in because filenames and document text may be private. Cohere documents query-document reranking at <https://docs.cohere.com/docs/rerank>; OpenAI documents vector embeddings at <https://developers.openai.com/api/docs/guides/embeddings>. Image-only files can later add a local zero-shot vision channel; Hugging Face documents open-label image classification at <https://huggingface.co/docs/transformers/main_classes/pipelines>.
+
+The default high-accuracy local profile uses `qwen3-embedding:4b` for batched candidate retrieval and `qwen3:4b` only for close-candidate review. Sparse retrieval, project/entity anchors, hierarchy conflicts, user feedback, and abstention gates remain authoritative. If Ollama or either model is unavailable, the app degrades safely instead of blocking file saves.
+
+`Training/train_embedding_relation.py` implements the iterative Oracle protocol with disjoint `train`, `V_dev`, and monitoring-only `T_rule` splits, a 0.97 precision floor, three-round plateau detection, subgroup metrics, confusion matrices, contradiction checks, and distribution-drift stops. Public 20-Newsgroups pairs live in a separate monitoring-only `public_stress` split because topic labels from a benchmark are not truthful personal-folder labels. Known user examples remain regression cases; they are never misreported as an untouched `T_real`.
 
 Provider quality must be measured against the private golden set and hard-case corpus before it receives nonzero decision weight. A better public leaderboard score is not sufficient.

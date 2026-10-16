@@ -32,6 +32,7 @@ STOP_WORDS = {
     "into", "file", "document", "page", "http", "https", "com", "www", "model", "article",
     "chapter", "section", "part", "version", "content", "type", "role", "message", "response",
     "export", "scan", "scanned", "img", "image",
+    "author", "unknown", "final", "draft", "copyright", "footer", "header", "generated",
     "of", "to", "in", "is", "it", "as", "an", "be", "by", "on", "or", "not", "you", "your",
     "do", "like", "will", "can", "may", "we", "our", "they", "their", "which", "what", "when",
     "where", "who", "how", "why", "also", "than", "then", "all", "any", "each", "other", "more",

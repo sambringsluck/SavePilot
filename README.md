@@ -29,6 +29,8 @@ sh installers/install-linux.sh
 
 选择“审计文件夹主题…”后，SavePilot 会分析所选文件夹顶层最多 80 个普通文件和子文件夹，用本机分词与 TF-IDF 主题向量建立多数主题画像。子文件夹会递归抽取少量、格式多样的代表文件，并独立比较“父目录声明用途”与“子目录实际主题”。只有明显偏离的少数项目才会进入推荐列表，并获得一个排除原文件夹后的新存放路径。至少需要 5 个可分析项目；应用不会自动移动任何审计结果。
 
+如果某个候选子文件夹本身内容匹配、只是上级目录放错，SavePilot 会保留这个候选并同时生成一条“迁移整个文件夹”的独立建议，而不是直接拒绝路径。即使先确认文件建议，文件也会先加入同一个候选文件夹，之后随文件夹整体迁移，因此左侧队列仍可按任意顺序处理。
+
 ## 智能分析能力
 
 - 文本与源码：按内容、文件名、UTType、语言和实体分析；Markdown 会剥离语法、YAML 头部及对话导出中的思考/工具调用记录，避免机器日志淹没正文。
@@ -62,13 +64,20 @@ macOS 的权限必须由用户在系统设置中明确批准，应用不会也�
 
 ## 智能引擎模式
 
-- **自动**：优先尝试 Apple Foundation Models；不可用时使用内置语义引擎。
+- **自动**：优先尝试 Apple Foundation Models；不可用时使用内置语义引擎。若本机已有 Ollama embedding 模型，也会在稀疏检索证据不足时用它召回候选，再交给目录主题、关系图、层级冲突和置信度门控复核。
 - **Apple 本机模型**：显式使用兼容系统上的 Apple Foundation Models，失败后安全回退。
-- **Ollama**：只连接 `127.0.0.1:11434`，默认模型为 `qwen3:4b`；需要你自行安装并启动 Ollama。
+- **Ollama**：只连接 `127.0.0.1:11434`。高准确率配置使用 `qwen3-embedding:4b` 做批量语义召回、`qwen3:4b` 只重排最接近的少量候选；embedding 不会单独批准移动。两者各约 2.5 GB，建议预留约 6 GB 模型空间；未安装或服务离线时自动安全降级，不阻断保存流程。
 - **DeepSeek API**：可选云端增强，默认模型 `deepseek-flash`。密钥只保存在 macOS 钥匙串；默认仅发送文件名、类型、实体、目录末级名称和裁剪后的摘要，不上传原文件。
 - **内置本地引擎**：完全离线、无额外依赖。
 
 Apple、Vision、Natural Language、Spotlight 与 Quick Look 路径都在本机执行；Ollama 模式也被限制为本机回环地址。只有主动选择 DeepSeek API 时才会联网，且可选择是否发送最多 4,000 字符的详细内容。
+
+推荐的本地高准确率配置：
+
+```bash
+ollama pull qwen3-embedding:4b
+ollama pull qwen3:4b
+```
 
 ## 为什么不能真正改写每个应用的保存窗口
 
@@ -83,6 +92,10 @@ SavePilot 使用两层方案：辅助功能只读识别保存窗口并提供落�
 ```bash
 chmod +x Scripts/build-app.sh Scripts/run-self-test.sh Scripts/run-oracle-eval.sh
 zsh Scripts/run-oracle-eval.sh
+zsh Scripts/run-oracle-v2-eval.sh
+PYTHONPATH=CrossPlatform/src python3 Training/hard_case_corpus.py
+PYTHONPATH=CrossPlatform/src python3 Training/evaluate_hard_cases.py Training/generated/savepilot-hard-cases-v2.jsonl
+PYTHONPATH=CrossPlatform/src python3 Training/train_embedding_relation.py Training/generated/savepilot-hard-cases-v2.jsonl
 ./Scripts/run-self-test.sh
 ./Scripts/build-app.sh
 open dist/SavePilot.app
@@ -112,4 +125,4 @@ open dist/SavePilot.app
 - `DocumentRelationshipEngine.swift`：建立跨目录文件关系、识别可复用项目簇，并阻断困难混淆对。
 - `FileMover.swift`：确认移动、冲突保护和撤销。
 
-产品边界、评估方法和路线图见 [`Docs/PRD.md`](Docs/PRD.md)；困难样本、文件关系图与模型/API 取舍见 [`Docs/ACCURACY.md`](Docs/ACCURACY.md)。合成 Oracle 回归可用 `zsh Scripts/run-oracle-eval.sh`；它用于防止规则回退，不等同于真实个人文件的准确率。
+产品边界、评估方法和路线图见 [`Docs/PRD.md`](Docs/PRD.md)；困难样本、文件关系图与模型/API 取舍见 [`Docs/ACCURACY.md`](Docs/ACCURACY.md)。基础合成 Oracle 回归可用 `zsh Scripts/run-oracle-eval.sh`；全新且独立的对抗测试集可用 `zsh Scripts/run-oracle-v2-eval.sh`，它另外覆盖错文件名、OCR 噪声、发布顺序、关系硬负例和父子目录图。两者用于防止规则回退，不等同于真实个人文件的准确率。

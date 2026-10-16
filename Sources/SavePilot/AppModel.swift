@@ -15,6 +15,11 @@ final class AppModel: ObservableObject {
     @Published var ollamaModel = "qwen3:4b" {
         didSet { persistAISettings() }
     }
+    @Published var ollamaEmbeddingModel = "qwen3-embedding:4b" {
+        didSet { persistAISettings() }
+    }
+    @Published var embeddingStatus = ""
+    @Published var ollamaSetupStatus = "尚未检测"
     @Published var deepSeekModel = "deepseek-flash" {
         didSet { persistAISettings() }
     }
@@ -75,8 +80,16 @@ final class AppModel: ObservableObject {
             // a refreshed snapshot is built in the background for future files.
             if hadCachedProfiles, self.autoScanExisting { self.analyzeExistingFiles(limit: 12) }
             await self.refreshFolderKnowledge()
+            await self.checkOllamaSetup()
             if !hadCachedProfiles, self.autoScanExisting { self.analyzeExistingFiles(limit: 12) }
         }
+    }
+
+    func checkOllamaSetup() async {
+        ollamaSetupStatus = "正在检测 Ollama 与高精度模型…"
+        ollamaSetupStatus = await OllamaRecommender.setupStatus(
+            requiredModels: [ollamaEmbeddingModel, ollamaModel]
+        )
     }
 
     var pendingCount: Int { suggestions.count }
@@ -200,12 +213,39 @@ final class AppModel: ObservableObject {
                 .sorted { $0.modified > $1.modified }
             selected.append(contentsOf: remaining.prefix(safeLimit - selected.count))
         }
-        let queuedCount = min(selected.count, safeLimit)
-        existingScanStatus = totalCount == 0
-            ? "没有发现需要分析的现有文件"
-            : "发现 \(totalCount) 个现有文件，已从 \(groups.count) 个入口均衡加入 \(queuedCount) 个到分析队列"
-        for candidate in selected.prefix(safeLimit) {
-            enqueueFile(candidate.url, allowExisting: true)
+        let filesToQueue = Array(selected.prefix(safeLimit))
+        guard !filesToQueue.isEmpty else {
+            existingScanStatus = "没有发现需要分析的现有文件"
+            return
+        }
+        // Relationship inference must not depend on queue order. Pre-read a
+        // broader, bounded corpus before publishing the first suggestion.
+        let corpusLimit = min(160, max(safeLimit, 80))
+        let relationshipCorpus = Array(groups.flatMap { $0 }
+            .sorted { $0.modified > $1.modified }
+            .prefix(corpusLimit))
+        existingScanStatus = "发现 \(totalCount) 个现有文件，正在预读 \(relationshipCorpus.count) 个文件并建立关系图…"
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            for start in stride(from: 0, to: relationshipCorpus.count, by: 6) {
+                let chunk = Array(relationshipCorpus[start..<min(start + 6, relationshipCorpus.count)])
+                let missing = chunk.filter { self.recentContentByPath[$0.url.standardizedFileURL.path] == nil }
+                let extracted = await withTaskGroup(of: (String, ExtractedContent).self) { group in
+                    for candidate in missing {
+                        group.addTask {
+                            let value = await ContentExtractor.extract(from: candidate.url)
+                            return (candidate.url.standardizedFileURL.path, value)
+                        }
+                    }
+                    var values: [(String, ExtractedContent)] = []
+                    for await value in group { values.append(value) }
+                    return values
+                }
+                for (path, content) in extracted { self.recentContentByPath[path] = content }
+            }
+            self.trimRelationshipCorpus(keeping: Set(filesToQueue.map { $0.url.standardizedFileURL.path }))
+            self.existingScanStatus = "关系图已预热；已从 \(groups.count) 个入口均衡加入 \(filesToQueue.count) 个到分析队列"
+            for candidate in filesToQueue { self.enqueueFile(candidate.url, allowExisting: true) }
         }
     }
 
@@ -344,8 +384,10 @@ final class AppModel: ObservableObject {
         var name = URL(fileURLWithPath: rawName.trimmingCharacters(in: .whitespacesAndNewlines)).lastPathComponent
         name = name.replacingOccurrences(of: #"[/:\\\x00-\x1F]"#, with: "_", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: ".")))
-        let originalExtension = source.pathExtension
         guard !name.isEmpty else { return source.lastPathComponent }
+        let isDirectory = (try? source.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+        if isDirectory { return String(name.prefix(180)) }
+        let originalExtension = source.pathExtension
         if !originalExtension.isEmpty {
             let candidate = URL(fileURLWithPath: name)
             let base = candidate.pathExtension.isEmpty
@@ -426,14 +468,17 @@ final class AppModel: ObservableObject {
 
         state = .analyzing(url.lastPathComponent)
         let roots = effectiveDestinationURLs()
-        let content = await Task.detached(priority: .userInitiated) {
-            await ContentExtractor.extract(from: url)
-        }.value
-        recentContentByPath[url.standardizedFileURL.path] = content
-        if recentContentByPath.count > 240 {
-            let active = Set(suggestions.suffix(180).map { $0.source.standardizedFileURL.path })
-            recentContentByPath = recentContentByPath.filter { active.contains($0.key) || $0.key == url.standardizedFileURL.path }
+        let path = url.standardizedFileURL.path
+        let content: ExtractedContent
+        if let cached = recentContentByPath[path] {
+            content = cached
+        } else {
+            content = await Task.detached(priority: .userInitiated) {
+                await ContentExtractor.extract(from: url)
+            }.value
         }
+        recentContentByPath[url.standardizedFileURL.path] = content
+        trimRelationshipCorpus(keeping: [url.standardizedFileURL.path])
         let suggestionEngine = engine
         let userProfile = userProfileStore.snapshot
         let academicTopic = suggestionEngine.specificTopicMatch(
@@ -444,9 +489,28 @@ final class AppModel: ObservableObject {
         }.value
         let learned = learningStore.recommendation(for: url, content: content, roots: roots)
         let profiles = folderKnowledgeProfiles
-        let knowledgeCandidate = learned == nil ? await Task.detached(priority: .userInitiated) {
+        var knowledgeCandidate = learned == nil ? await Task.detached(priority: .userInitiated) {
             FolderKnowledgeIndex.recommend(source: url, content: content, profiles: profiles)
         }.value : nil
+        if learned == nil, knowledgeCandidate == nil,
+           aiBackend == .ollama || aiBackend == .automatic {
+            embeddingStatus = "Ollama embedding 正在检索最相关的本地目录…"
+            if let shortlist = await OllamaEmbeddingRetriever.shared.shortlist(
+                source: url,
+                content: content,
+                profiles: profiles,
+                model: ollamaEmbeddingModel
+            ) {
+                knowledgeCandidate = await Task.detached(priority: .userInitiated) {
+                    FolderKnowledgeIndex.recommend(source: url, content: content, profiles: shortlist)
+                }.value
+                embeddingStatus = knowledgeCandidate == nil
+                    ? "Embedding 已召回候选，但证据门控选择拒绝推荐。"
+                    : "Embedding 已缩小到 \(shortlist.count) 个候选，并通过本地多证据复核。"
+            } else {
+                embeddingStatus = "Ollama embedding 不可用或没有拉开候选差距，已安全回退。"
+            }
+        }
         let strongTitleCategory = suggestionEngine.strongTitleCategoryName(for: url)
         let knowledge = knowledgeCandidate.flatMap { candidate in
             if let academicTopic {
@@ -523,6 +587,33 @@ final class AppModel: ObservableObject {
             fallback: fallback,
             allowCreatingFolder: allowCreatingFolder
         )
+        if let group = DocumentRelationshipEngine.namedRecommendation(
+            for: url,
+            content: content,
+            corpus: recentContentByPath
+        ), let root = roots.first?.standardizedFileURL {
+            let target = root.appendingPathComponent(group.topicName, isDirectory: true)
+            let exists = FileManager.default.fileExists(atPath: target.path)
+            suggestion = FileSuggestion(
+                id: suggestion.id,
+                source: suggestion.source,
+                destinationFolder: exists ? target : root,
+                proposedFolderName: exists ? "" : group.topicName,
+                reason: "文件关系图（发布前校验）：与“\(group.peerNames.joined(separator: "、"))”具有同一结构化主题，直接归入“\(group.topicName)”，不发布较弱的目录近似结果。",
+                summary: suggestion.summary,
+                confidence: max(0.86, group.score),
+                createsFolder: !exists,
+                detectedAt: suggestion.detectedAt,
+                proposedFileName: suggestion.proposedFileName
+            )
+        }
+        suggestion = sanitizeHierarchyConflict(
+            suggestion,
+            source: url,
+            content: content,
+            roots: roots,
+            profiles: profiles
+        )
         if let fileName = FileNameSuggester.suggest(
             source: url,
             content: content,
@@ -572,6 +663,85 @@ final class AppModel: ObservableObject {
         ))
         NSApp.activate(ignoringOtherApps: true)
         NotificationCenter.default.post(name: .showReviewWindow, object: nil)
+    }
+
+    private func trimRelationshipCorpus(keeping protectedPaths: Set<String>) {
+        guard recentContentByPath.count > 240 else { return }
+        let active = Set(suggestions.suffix(120).map { $0.source.standardizedFileURL.path })
+            .union(protectedPaths)
+        let retained = recentContentByPath.keys.sorted().filter { active.contains($0) }
+        var result = Dictionary(uniqueKeysWithValues: retained.compactMap { path in
+            recentContentByPath[path].map { (path, $0) }
+        })
+        for path in recentContentByPath.keys.sorted() where result.count < 220 {
+            if let content = recentContentByPath[path] { result[path] = content }
+        }
+        recentContentByPath = result
+    }
+
+    private func sanitizeHierarchyConflict(
+        _ suggestion: FileSuggestion,
+        source: URL,
+        content: ExtractedContent,
+        roots: [URL],
+        profiles: [FolderKnowledgeProfile]
+    ) -> FileSuggestion {
+        guard let conflict = FolderKnowledgeIndex.hierarchyConflict(
+            containing: suggestion.finalDestinationFolder,
+            profiles: profiles
+        ), let root = roots.first?.standardizedFileURL else { return suggestion }
+        let project = DocumentRelationshipEngine.specificTopicName(for: source, content: content)
+        let plannedFolder = ensureHierarchyRelocationSuggestion(
+            conflict: conflict,
+            projectName: project,
+            root: root,
+            profiles: profiles
+        )
+        let child = URL(fileURLWithPath: conflict.childPath, isDirectory: true).standardizedFileURL
+        return FileSuggestion(
+            id: suggestion.id,
+            source: suggestion.source,
+            destinationFolder: child,
+            proposedFolderName: "",
+            reason: "目录层级图校验：文件内容适合候选目录“\(child.lastPathComponent)”，但该目录与上级“\(URL(fileURLWithPath: conflict.parentPath).lastPathComponent)”存在 \(conflict.parentSubject)→\(conflict.childSubject) 主题冲突。已同时生成该文件夹迁移建议；迁移后的路径为“\(plannedFolder.path)”。若先处理本文件，它会随整个候选文件夹一起迁移。",
+            summary: suggestion.summary,
+            confidence: max(0.78, min(suggestion.confidence, conflict.confidence)),
+            createsFolder: false,
+            detectedAt: suggestion.detectedAt,
+            proposedFileName: suggestion.proposedFileName
+        )
+    }
+
+    private func ensureHierarchyRelocationSuggestion(
+        conflict: FolderHierarchyConflict,
+        projectName: String?,
+        root: URL,
+        profiles: [FolderKnowledgeProfile]
+    ) -> URL {
+        let child = URL(fileURLWithPath: conflict.childPath, isDirectory: true).standardizedFileURL
+        let plan = FolderKnowledgeIndex.relocationPlan(
+            for: conflict,
+            root: root,
+            projectName: projectName
+        )
+        let plannedFolder = plan.finalFolder
+        guard FileManager.default.fileExists(atPath: child.path),
+              !suggestions.contains(where: { $0.source.standardizedFileURL == child })
+        else { return plannedFolder }
+        let profile = profiles.first { $0.path == conflict.childPath }
+        suggestions.append(FileSuggestion(
+            id: UUID(),
+            source: child,
+            destinationFolder: plan.destinationContainer,
+            proposedFolderName: "",
+            reason: "目录关系建议：该子文件夹的多数内容属于“\(conflict.childSubject)”，与上级“\(URL(fileURLWithPath: conflict.parentPath).lastPathComponent)”的“\(conflict.parentSubject)”用途冲突。建议将整个文件夹迁出；这是一条独立建议，可单独确认。",
+            summary: "抽样 \(profile?.sampledFiles ?? 0) 个文件；主题一致度 \(Int((profile?.coherence ?? 0) * 100))%。",
+            confidence: conflict.confidence,
+            createsFolder: false,
+            detectedAt: Date(),
+            proposedFileName: plan.finalFolderName
+        ))
+        return plannedFolder
     }
 
     private func refineSuggestion(
@@ -919,7 +1089,11 @@ final class AppModel: ObservableObject {
         }.value
         let samples = profiles.reduce(0) { $0 + $1.sampledFiles }
         let adaptive = profiles.filter { $0.sampledFiles > 3 }.count
-        folderKnowledgeStatus = "本地内容 RAG 已就绪：\(profiles.count) 个文件夹、\(samples) 个抽样文件；\(adaptive) 个混合主题目录已自动扩大抽样。"
+        let hierarchyConflicts = FolderKnowledgeIndex.hierarchyConflicts(in: profiles)
+        let hierarchyNote = hierarchyConflicts.isEmpty
+            ? "父子目录关系未发现明显冲突"
+            : "发现 \(hierarchyConflicts.count) 个父子目录主题冲突，已阻止继续向错位子目录推荐"
+        folderKnowledgeStatus = "本地内容 RAG 已就绪：\(profiles.count) 个文件夹、\(samples) 个抽样文件；\(adaptive) 个混合主题目录已自动扩大抽样；\(hierarchyNote)。"
     }
 
     private func updateKnowledgeProfile(for folder: URL) async {
@@ -970,6 +1144,7 @@ final class AppModel: ObservableObject {
         }
         aiBackend = AIBackend(rawValue: defaults.string(forKey: "aiBackend") ?? "automatic") ?? .automatic
         ollamaModel = defaults.string(forKey: "ollamaModel") ?? "qwen3:4b"
+        ollamaEmbeddingModel = defaults.string(forKey: "ollamaEmbeddingModel") ?? "qwen3-embedding:4b"
         deepSeekModel = defaults.string(forKey: "deepSeekModel") ?? "deepseek-flash"
         deepSeekSendDetailedContent = defaults.bool(forKey: "deepSeekSendDetailedContent")
         if defaults.object(forKey: "autoScanExisting") != nil {
@@ -990,6 +1165,7 @@ final class AppModel: ObservableObject {
     private func persistAISettings() {
         defaults.set(aiBackend.rawValue, forKey: "aiBackend")
         defaults.set(ollamaModel, forKey: "ollamaModel")
+        defaults.set(ollamaEmbeddingModel, forKey: "ollamaEmbeddingModel")
         defaults.set(deepSeekModel, forKey: "deepSeekModel")
         defaults.set(deepSeekSendDetailedContent, forKey: "deepSeekSendDetailedContent")
     }

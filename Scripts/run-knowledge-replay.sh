@@ -7,6 +7,7 @@ replay_binary="$(mktemp -d)/SavePilotKnowledgeReplay"
 cd "$project_dir"
 swiftc \
   Sources/SavePilot/Models.swift \
+  Sources/SavePilot/AcademicSubjectClassifier.swift \
   Sources/SavePilot/MarkdownContentNormalizer.swift \
   Sources/SavePilot/AdvancedExtractors.swift \
   Sources/SavePilot/ContentExtractor.swift \

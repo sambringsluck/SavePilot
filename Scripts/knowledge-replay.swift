@@ -10,9 +10,15 @@ private struct KnowledgeReplay {
         }
         let profiles = FolderKnowledgeIndex.load()
         print("profiles=\(profiles.count)")
+        let conflicts = FolderKnowledgeIndex.hierarchyConflicts(in: profiles)
+        print("hierarchy_conflicts=\(conflicts.count)")
+        for conflict in conflicts {
+            print("hierarchy\tchild=\(conflict.childPath)\tparent=\(conflict.parentPath)\t\(conflict.parentSubject)->\(conflict.childSubject)\tconfidence=\(String(format: "%.3f", conflict.confidence))")
+        }
         for path in paths {
             let source = URL(fileURLWithPath: path).standardizedFileURL
             let content = await ContentExtractor.extract(from: source)
+            print("content\tfile=\(source.lastPathComponent)\tentities=\(content.entities.prefix(12).joined(separator: ","))\tsummary=\(content.summary.prefix(240))")
             let recommendation = FolderKnowledgeIndex.recommend(
                 source: source,
                 content: content,

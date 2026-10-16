@@ -75,8 +75,26 @@ struct SettingsView: View {
                         Text(backend.title).tag(backend)
                     }
                 }
-                TextField("模型名称", text: $model.ollamaModel)
+                TextField("Ollama 复核模型", text: $model.ollamaModel)
                     .disabled(model.aiBackend != .ollama)
+                TextField("Ollama Embedding 模型", text: $model.ollamaEmbeddingModel)
+                    .disabled(model.aiBackend != .ollama)
+                if model.aiBackend == .ollama {
+                    Text("推荐高精度配置：qwen3-embedding:4b 负责 top-k 语义召回，qwen3:4b 只复核歧义候选。模型缺失或服务停止时会自动回退，不阻塞文件处理。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if !model.embeddingStatus.isEmpty {
+                        Text(model.embeddingStatus)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    HStack {
+                        Label(model.ollamaSetupStatus, systemImage: model.ollamaSetupStatus.contains("已就绪") ? "checkmark.circle.fill" : "exclamationmark.triangle")
+                            .font(.caption)
+                        Spacer()
+                        Button("重新检测") { Task { await model.checkOllamaSetup() } }
+                    }
+                }
                 if model.aiBackend == .deepseekCloud {
                     TextField("DeepSeek 模型", text: $model.deepSeekModel)
                     SecureField("粘贴 DeepSeek API Key", text: $model.deepSeekAPIKeyDraft)
