@@ -73,12 +73,74 @@ def named_relation(row: dict) -> bool:
     return relation is not None and relation.topic_name is not None
 
 
-def evaluate(rows: list[dict], cache: VectorCache, threshold: float) -> tuple[dict, list[dict], dict[str, dict]]:
+def semantic_tokens(text: str) -> list[str]:
+    lowered = text.casefold()
+    tokens = re.findall(r"[a-z0-9]{2,}", lowered)
+    for run in re.findall(r"[\u3400-\u9fff]+", lowered):
+        tokens.extend(run[index:index + 2] for index in range(max(1, len(run) - 1)))
+    return tokens
+
+
+def sparse_cosine(left: str, right: str) -> tuple[float, float, float]:
+    lhs, rhs = Counter(semantic_tokens(left)), Counter(semantic_tokens(right))
+    if not lhs or not rhs: return 0.0, 0.0, 0.0
+    shared = set(lhs).intersection(rhs)
+    dot = sum(lhs[token] * rhs[token] for token in shared)
+    cosine_value = dot / max(1e-12, math.sqrt(sum(v * v for v in lhs.values()) * sum(v * v for v in rhs.values())))
+    jaccard = len(shared) / max(1, len(set(lhs).union(rhs)))
+    containment = len(shared) / max(1, min(len(lhs), len(rhs)))
+    return cosine_value, jaccard, containment
+
+
+def feature_vector(row: dict, cache: VectorCache) -> list[float]:
+    similarity = cache.similarity(row)
+    lexical, jaccard, containment = sparse_cosine(row["left_text"], row["right_text"])
+    name_lexical, _, _ = sparse_cosine(row["left_name"], row["right_name"])
+    left_len, right_len = len(row["left_text"]), len(row["right_text"])
+    length_ratio = min(left_len, right_len) / max(1, max(left_len, right_len))
+    structured = 1.0 if named_relation(row) else 0.0
+    return [
+        1.0, similarity, similarity * similarity, lexical, jaccard,
+        containment, name_lexical, length_ratio, structured,
+        similarity * lexical,
+    ]
+
+
+def sigmoid(value: float) -> float:
+    value = max(-30.0, min(30.0, value))
+    return 1.0 / (1.0 + math.exp(-value))
+
+
+def train_weights(rows: list[dict], cache: VectorCache, epochs: int = 1800) -> list[float]:
+    matrix = [feature_vector(row, cache) for row in rows]
+    labels = [1.0 if row["should_link"] else 0.0 for row in rows]
+    positive = max(1, sum(labels))
+    negative = max(1, len(labels) - positive)
+    class_weights = [len(labels) / (2 * positive) if label else len(labels) / (2 * negative) for label in labels]
+    weights = [0.0] * len(matrix[0])
+    for epoch in range(epochs):
+        gradient = [0.0] * len(weights)
+        for features, label, class_weight in zip(matrix, labels, class_weights):
+            error = (sigmoid(sum(w * x for w, x in zip(weights, features))) - label) * class_weight
+            for index, value in enumerate(features): gradient[index] += error * value
+        learning_rate = 0.32 / (1.0 + epoch / 500.0)
+        for index in range(len(weights)):
+            regularization = 0.0 if index == 0 else 0.002 * weights[index]
+            weights[index] -= learning_rate * (gradient[index] / len(rows) + regularization)
+    return weights
+
+
+def probability(row: dict, cache: VectorCache, weights: list[float]) -> float:
+    return sigmoid(sum(weight * value for weight, value in zip(weights, feature_vector(row, cache))))
+
+
+def evaluate(rows: list[dict], cache: VectorCache, weights: list[float], threshold: float) -> tuple[dict, list[dict], dict[str, dict]]:
     tp = fp = fn = tn = 0
     errors: list[dict] = []
     groups: dict[str, list[tuple[bool, bool]]] = defaultdict(list)
     for row in rows:
-        predicted = named_relation(row) or cache.similarity(row) >= threshold
+        score = probability(row, cache, weights)
+        predicted = score >= threshold
         expected = bool(row["should_link"])
         groups[row["confusion"]].append((predicted, expected))
         if predicted and expected: tp += 1
@@ -86,7 +148,7 @@ def evaluate(rows: list[dict], cache: VectorCache, threshold: float) -> tuple[di
         elif expected: fn += 1
         else: tn += 1
         if predicted != expected:
-            errors.append({**row, "predicted": predicted, "similarity": cache.similarity(row)})
+            errors.append({**row, "predicted": predicted, "similarity": cache.similarity(row), "probability": score})
     precision = tp / max(1, tp + fp)
     recall = tp / max(1, tp + fn)
     metrics = {
@@ -101,17 +163,18 @@ def evaluate(rows: list[dict], cache: VectorCache, threshold: float) -> tuple[di
     return metrics, errors, subgroup
 
 
-def fit_threshold(train: list[dict], cache: VectorCache, minimum_precision: float) -> tuple[float, dict]:
+def fit_threshold(train: list[dict], cache: VectorCache, minimum_precision: float) -> tuple[float, dict, list[float]]:
+    weights = train_weights(train, cache)
     candidates = []
-    for step in range(400, 971):
+    for step in range(50, 991):
         threshold = step / 1000
-        value, _, _ = evaluate(train, cache, threshold)
+        value, _, _ = evaluate(train, cache, weights, threshold)
         if value["precision"] >= minimum_precision:
             candidates.append((value["f1"], value["accuracy"], threshold, value))
     if not candidates:
         raise RuntimeError("no threshold satisfies the precision floor")
     _, _, threshold, metrics = max(candidates)
-    return threshold, metrics
+    return threshold, metrics, weights
 
 
 def contradiction_count(rows: list[dict]) -> int:
@@ -152,6 +215,37 @@ def augment_from_dev(errors: list[dict], round_index: int, train_counts: Counter
     return additions, dict(reasons)
 
 
+def balance_additions(additions: list[dict], train: list[dict], target_rate: float, round_index: int) -> list[dict]:
+    if not additions: return additions
+    balanced = list(additions)
+    pools = {
+        True: [row for row in train if row["should_link"]],
+        False: [row for row in train if not row["should_link"]],
+    }
+    cursor = Counter()
+    maximum = len(additions) * 3 + 200
+    while len(balanced) < maximum:
+        combined = train + balanced
+        rate = sum(bool(row["should_link"]) for row in combined) / len(combined)
+        if abs(rate - target_rate) <= .02: break
+        wanted = rate < target_rate
+        pool = pools[wanted]
+        if not pool: break
+        seed = pool[cursor[wanted] % len(pool)]
+        cursor[wanted] += 1
+        balanced.append({
+            **seed,
+            "case_id": f"balance-r{round_index}-{int(wanted)}-{cursor[wanted]}",
+            "left_name": f"balanced-{round_index}-{cursor[wanted]}-{seed['left_name']}",
+            "right_name": f"balanced-{round_index}-{cursor[wanted]}-{seed['right_name']}",
+            "left_text": "archived copy " + seed["left_text"],
+            "right_text": "archived copy " + seed["right_text"],
+            "split": "train",
+            "source": "class-balance Oracle control",
+        })
+    return balanced
+
+
 def fmt(value: dict) -> str:
     return f"P={value['precision']:.3f} R={value['recall']:.3f} F1={value['f1']:.3f} Acc={value['accuracy']:.3f}"
 
@@ -182,29 +276,32 @@ def main() -> None:
     dev_positive_rate = sum(row["should_link"] for row in development) / len(development)
 
     for round_index in range(1, args.max_rounds + 1):
-        threshold, train_metrics = fit_threshold(train, cache, args.minimum_precision)
-        dev_metrics, dev_errors, dev_groups = evaluate(development, cache, threshold)
-        rule_metrics, _, rule_groups = evaluate(rule_holdout, cache, threshold)
-        public_metrics, _, public_groups = evaluate(public_stress, cache, threshold) if public_stress else ({}, [], {})
+        threshold, train_metrics, weights = fit_threshold(train, cache, args.minimum_precision)
+        dev_metrics, dev_errors, dev_groups = evaluate(development, cache, weights, threshold)
+        rule_metrics, _, rule_groups = evaluate(rule_holdout, cache, weights, threshold)
+        public_metrics, _, public_groups = evaluate(public_stress, cache, weights, threshold) if public_stress else ({}, [], {})
         contradictions = contradiction_count(train + development)
         train_counts = Counter(row["confusion"] for row in train)
         a_count = sum(train_counts[row["confusion"]] >= 8 for row in dev_errors)
         c_count = len(dev_errors) - a_count
         additions, reasons = augment_from_dev(dev_errors, round_index, train_counts)
+        additions = balance_additions(additions, train, dev_positive_rate, round_index)
         train_positive_rate = sum(row["should_link"] for row in train) / len(train)
-        drift = abs(train_positive_rate - dev_positive_rate)
+        projected = train + additions
+        projected_positive_rate = sum(row["should_link"] for row in projected) / len(projected)
+        drift = abs(projected_positive_rate - dev_positive_rate)
         improvement = dev_metrics["f1"] - best_f1 if best_f1 >= 0 else dev_metrics["f1"]
         plateau = plateau + 1 if best_f1 >= 0 and improvement < args.minimum_improvement else 0
         best_f1 = max(best_f1, dev_metrics["f1"])
         history.append({
-            "round": round_index, "threshold": threshold, "train_size": len(train),
+            "round": round_index, "threshold": threshold, "weights": weights, "train_size": len(train),
             "train": train_metrics, "development": dev_metrics, "rule_holdout": rule_metrics,
             "public_stress": public_metrics,
             "errors": {"a": a_count, "b": contradictions, "c": c_count},
             "added": len(additions), "addition_reasons": reasons, "distribution_drift": drift,
             "development_subgroups": dev_groups, "rule_subgroups": rule_groups,
             "public_subgroups": public_groups,
-            "typical_errors": [{k: row[k] for k in ("case_id", "confusion", "should_link", "predicted", "similarity")} for row in dev_errors[:8]],
+            "typical_errors": [{k: row[k] for k in ("case_id", "confusion", "should_link", "predicted", "similarity", "probability")} for row in dev_errors[:8]],
         })
         print(f"\n轮次：{round_index}")
         print(f"训练集规模：{len(train)}")
@@ -237,6 +334,8 @@ def main() -> None:
     final = history[-1]
     payload = {
         "model": args.model, "threshold": final["threshold"],
+        "feature_weights": final["weights"],
+        "features": ["bias", "embedding", "embedding_squared", "lexical_cosine", "token_jaccard", "token_containment", "filename_cosine", "length_ratio", "structured_relation", "embedding_x_lexical"],
         "minimum_precision": args.minimum_precision, "stop_reason": stop_reason,
         "rounds": history,
         "T_real": {"status": "not_available", "reason": "已知个人文件只作回归，不冒充未见真实测试集"},

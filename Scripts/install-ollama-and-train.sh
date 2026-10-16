@@ -9,11 +9,19 @@ checksum_url="https://github.com/ollama/ollama/releases/download/${ollama_versio
 log_dir="$HOME/Library/Application Support/SavePilot"
 mkdir -p "$log_dir"
 
+expected_checksum="$(curl -L --fail --retry 5 -sS "$checksum_url" | awk '$2 ~ /(^|\/)Ollama-darwin.zip$/ { print $1 }')"
 echo "[1/7] Downloading the official Ollama ${ollama_version} app (resumable)"
-curl -L --fail --retry 8 --retry-delay 3 -C - -o "$archive" "$asset_url"
+existing_checksum=""
+if [[ -f "$archive" ]]; then
+  existing_checksum="$(shasum -a 256 "$archive" | awk '{ print $1 }')"
+fi
+if [[ -n "$expected_checksum" && "$existing_checksum" == "$expected_checksum" ]]; then
+  echo "Using the already complete verified archive"
+else
+  curl -L --fail --retry 8 --retry-delay 3 -C - -o "$archive" "$asset_url"
+fi
 
 echo "[2/7] Verifying the official release checksum"
-expected_checksum="$(curl -L --fail --retry 5 -sS "$checksum_url" | awk '$2 == "Ollama-darwin.zip" { print $1 }')"
 actual_checksum="$(shasum -a 256 "$archive" | awk '{ print $1 }')"
 if [[ -z "$expected_checksum" || "$actual_checksum" != "$expected_checksum" ]]; then
   echo "Checksum verification failed" >&2

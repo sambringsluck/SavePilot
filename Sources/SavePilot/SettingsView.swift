@@ -6,7 +6,7 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section("监听目录") {
-                Text("新文件写入完成后会自动分析。建议把常用软件的默认保存位置设为这些目录。")
+                Text("写入完成后自动分析。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 ForEach(model.watchedFolders) { folder in
@@ -43,7 +43,7 @@ struct SettingsView: View {
             }
 
             Section("归档根目录") {
-                Text("SavePilot 会检索归档根目录，以及桌面/下载中已经存在的文件夹、文件名与格式画像。没有可靠匹配时，只有文件名或正文证据充分，或相似主题已重复出现，才会建议新建稳定的上位主题目录；不会用单个文件标题创建一文件一目录，且仍需你确认。")
+                Text("优先复用这里已有的文件夹；证据不足时保持原位。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 ForEach(model.destinationRoots) { root in
@@ -80,7 +80,7 @@ struct SettingsView: View {
                 TextField("Ollama Embedding 模型", text: $model.ollamaEmbeddingModel)
                     .disabled(model.aiBackend != .ollama)
                 if model.aiBackend == .ollama {
-                    Text("推荐高精度配置：qwen3-embedding:4b 负责 top-k 语义召回，qwen3:4b 只复核歧义候选。模型缺失或服务停止时会自动回退，不阻塞文件处理。")
+                    Text("Embedding 找候选，复核模型处理歧义；离线时自动回退。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     if !model.embeddingStatus.isEmpty {
@@ -123,7 +123,7 @@ struct SettingsView: View {
                             .textSelection(.enabled)
                     }
                 }
-                Text("自动模式优先使用 macOS 26 的 Apple Foundation Models，不可用时回退到内置语义引擎。Ollama 固定连接本机 127.0.0.1:11434；DeepSeek 仅在你主动选择后联网。")
+                Text("自动模式优先本机模型；DeepSeek 仅在主动选择后联网。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Label(model.learningSummary, systemImage: "brain.head.profile")
@@ -171,10 +171,7 @@ struct SettingsView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                Text("辅助功能只用于识别其他应用当前是否出现保存/另存为面板及拟保存文件名，不会自动点击按钮或读取密码输入框。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text("即使监听个人目录，SavePilot 也会永久跳过 ~/Library、隐藏目录、应用包、废纸篓和开发构建缓存。")
+                Text("辅助功能仅识别保存面板；系统目录、隐藏文件和应用数据始终跳过。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -231,7 +228,7 @@ struct MenuBarView: View {
                 model.analyzeExistingFiles()
                 openWindow(id: "review")
             }
-            Button("审计文件夹主题…") {
+            Button("检查文件夹归类…") {
                 model.chooseAndAuditFolder()
                 openWindow(id: "review")
             }

@@ -53,18 +53,21 @@ struct ReviewView: View {
                 } label: {
                     Label("扫描现有文件", systemImage: "arrow.clockwise")
                 }
+                .help("重新扫描桌面、下载与监听目录")
                 Button {
                     model.chooseAndAuditFolder()
                 } label: {
-                    Label("审计文件夹主题", systemImage: "folder.badge.questionmark")
+                    Label("检查文件夹归类", systemImage: "magnifyingglass")
                 }
                 .disabled(model.folderAuditRunning)
+                .help("检查文件夹中可能放错的文件和子文件夹")
                 Button {
                     model.undoLastMove()
                 } label: {
                     Label("撤销上次移动", systemImage: "arrow.uturn.backward")
                 }
                 .disabled(model.moveHistory.isEmpty)
+                .help("撤销最近一次由 SavePilot 完成的移动")
             }
         }
     }
@@ -135,7 +138,7 @@ private struct SuggestionRow: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(suggestion.source.lastPathComponent)
                     .lineLimit(1)
-                Text(suggestion.finalDestinationFolder.lastPathComponent)
+                Text("→ \(suggestion.finalDestinationFolder.lastPathComponent)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -204,8 +207,12 @@ private struct SuggestionDetail: View {
                                     .background(.blue.opacity(0.12), in: Capsule())
                             }
                         }
-                        Text(suggestion.reason)
-                            .foregroundStyle(.secondary)
+                        DisclosureGroup("推荐依据") {
+                            Text(suggestion.reason)
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                                .padding(.top, 4)
+                        }
                         if let prerequisite = model.relocationPrerequisite(for: suggestion) {
                             Label(
                                 "请先在左侧确认或拒绝“\(prerequisite.source.lastPathComponent)”的文件夹迁移建议",
@@ -276,9 +283,9 @@ private struct SuggestionDetail: View {
                 HStack {
                     Button("在 Finder 中查看") { model.reveal(suggestion.source) }
                     Spacer()
-                    Button("保留原位") { model.dismiss(suggestion) }
-                    Button("选择其他位置…") { model.chooseAndConfirm(suggestion) }
-                    Button(isKeepingOriginalLocationAndName ? "确认保留原位" : "确认存放") {
+                    Button("保留") { model.dismiss(suggestion) }
+                    Button("其他位置…") { model.chooseAndConfirm(suggestion) }
+                    Button(isKeepingOriginalLocationAndName ? "确认保留" : "确认") {
                         model.confirm(suggestion, fileName: editedFileName)
                     }
                         .buttonStyle(.borderedProminent)
@@ -338,7 +345,7 @@ private struct EmptyReviewView: View {
             Label("正在守候新文件", systemImage: "tray.and.arrow.down")
         } description: {
             VStack(spacing: 5) {
-                Text("把文件保存到监听目录后，SavePilot 会读取内容并提出存放建议。未经确认不会移动任何文件。")
+                Text("保存到监听目录后，建议会出现在这里。")
                 if !model.existingScanStatus.isEmpty {
                     Text(model.existingScanStatus)
                         .font(.caption)
@@ -361,12 +368,12 @@ private struct EmptyReviewView: View {
                     )
                 }
                 .font(.caption)
-                Button("扫描全部现有文件") {
+                Button("扫描现有文件") {
                     model.analyzeExistingFiles(limit: 100)
                 }
                 .buttonStyle(.borderedProminent)
-                SettingsLink { Text("检查权限与设置") }
-                Button(model.folderAuditRunning ? "正在审计文件夹…" : "检查一个文件夹中可能放错的文件") {
+                SettingsLink { Text("设置") }
+                Button(model.folderAuditRunning ? "正在检查…" : "检查文件夹归类") {
                     model.chooseAndAuditFolder()
                 }
                 .disabled(model.folderAuditRunning)
