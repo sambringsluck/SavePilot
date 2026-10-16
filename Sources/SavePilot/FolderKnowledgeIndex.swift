@@ -36,8 +36,10 @@ enum FolderKnowledgeIndex {
     ]
 
     static func load() -> [FolderKnowledgeProfile] {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
         guard let data = try? Data(contentsOf: storageURL),
-              let profiles = try? JSONDecoder().decode([FolderKnowledgeProfile].self, from: data)
+              let profiles = try? decoder.decode([FolderKnowledgeProfile].self, from: data)
         else { return [] }
         return profiles.filter { FileManager.default.fileExists(atPath: $0.path) }
     }
@@ -83,18 +85,26 @@ enum FolderKnowledgeIndex {
         profiles: [FolderKnowledgeProfile],
         excludingFolders: Set<String> = []
     ) -> FolderKnowledgeRecommendation? {
-        let usable = profiles.filter { profile in
+        let initiallyUsable = profiles.filter { profile in
             let path = URL(fileURLWithPath: profile.path).standardizedFileURL.path
             return !excludingFolders.contains(where: { path == $0 || path.hasPrefix($0 + "/") })
                 && path != source.deletingLastPathComponent().standardizedFileURL.path
         }
-        guard usable.count >= 2 else { return nil }
 
         var queryCounts = tokenCounts(String(content.text.prefix(10_000)))
         mergeCounts(tokenCounts(content.summary), into: &queryCounts, multiplier: 2)
         mergeCounts(tokenCounts(content.entities.joined(separator: " ")), into: &queryCounts, multiplier: 2)
         mergeCounts(tokenCounts(source.deletingPathExtension().lastPathComponent), into: &queryCounts, multiplier: 3)
         guard !queryCounts.isEmpty else { return nil }
+        let rawQueryText = "\(source.deletingPathExtension().lastPathComponent) \(content.summary) \(String(content.text.prefix(10_000)))".lowercased()
+        let usable = initiallyUsable.filter {
+            destinationIntentIsCompatible(
+                profile: $0,
+                allProfiles: initiallyUsable,
+                rawQueryText: rawQueryText
+            )
+        }
+        guard usable.count >= 2 else { return nil }
 
         var documentFrequency: [String: Int] = [:]
         for profile in usable {
@@ -150,10 +160,15 @@ enum FolderKnowledgeIndex {
         }
 
         let evidenceCandidates = scored.map {
-            FolderEvidenceCandidate(
+            let topicRoutingAllowed = EvidenceRanker.allowsTopicOnlyRouting(
+                coherence: $0.0.coherence,
+                sampledFiles: $0.0.sampledFiles,
+                pathMatch: $0.3
+            )
+            return FolderEvidenceCandidate(
                 identifier: $0.0.path,
-                semantic: $0.1,
-                hypergraph: $0.2,
+                semantic: topicRoutingAllowed ? $0.1 : 0,
+                hypergraph: topicRoutingAllowed ? $0.2 : 0,
                 pathMatch: $0.3,
                 extensionMatch: $0.4,
                 coherence: $0.0.coherence * min(1, Double($0.0.sampledFiles) / 4.0),
@@ -193,7 +208,13 @@ enum FolderKnowledgeIndex {
         let titleInContent = scored.map { candidate -> ((FolderKnowledgeProfile, Double, Double, Double, Double, [String]), [String]) in
             let matches = specificSourceNameTerms.intersection(candidate.0.weights.keys).sorted()
             return (candidate, matches)
-        }.filter { $0.1.count >= 2 }
+        }.filter {
+            $0.1.count >= 2 && EvidenceRanker.allowsTopicOnlyRouting(
+                coherence: $0.0.0.coherence,
+                sampledFiles: $0.0.0.sampledFiles,
+                pathMatch: $0.0.3
+            )
+        }
             .sorted {
                 if $0.1.count != $1.1.count { return $0.1.count > $1.1.count }
                 return $0.0.1 > $1.0.1
@@ -219,7 +240,14 @@ enum FolderKnowledgeIndex {
         // the containing folder mixes several projects and therefore has low
         // global coherence (for example an author name plus a research topic).
         let explicitEdge = scored
-            .filter { $0.2 >= 0.12 && $0.1 >= 0.06 && $0.5.count >= 3 }
+            .filter {
+                $0.2 >= 0.12 && $0.1 >= 0.06 && $0.5.count >= 3
+                    && EvidenceRanker.allowsTopicOnlyRouting(
+                        coherence: $0.0.coherence,
+                        sampledFiles: $0.0.sampledFiles,
+                        pathMatch: $0.3
+                    )
+            }
             .sorted { $0.2 > $1.2 }
         if let best = explicitEdge.first {
             let secondEdge = explicitEdge.dropFirst().first?.2 ?? 0
@@ -320,6 +348,42 @@ enum FolderKnowledgeIndex {
 
     private static func normalizedCounts(_ counts: [String: Int]) -> [String: Double] {
         normalized(counts.mapValues(Double.init))
+    }
+
+    /// Project submission folders often contain copied reference material.
+    /// Similarity to one of those references does not mean a new document
+    /// belongs to the project. Protect the project and its descendants unless
+    /// the current file explicitly contains the project anchor.
+    private static func destinationIntentIsCompatible(
+        profile: FolderKnowledgeProfile,
+        allProfiles: [FolderKnowledgeProfile],
+        rawQueryText: String
+    ) -> Bool {
+        let path = URL(fileURLWithPath: profile.path).standardizedFileURL.path
+        for container in allProfiles {
+            let containerPath = URL(fileURLWithPath: container.path).standardizedFileURL.path
+            guard path == containerPath || path.hasPrefix(containerPath + "/"),
+                  let anchor = protectedProjectAnchor(
+                    URL(fileURLWithPath: containerPath).lastPathComponent
+                  )
+            else { continue }
+            if !rawQueryText.contains(anchor) { return false }
+        }
+        return true
+    }
+
+    private static func protectedProjectAnchor(_ folderName: String) -> String? {
+        let markers = ["提交", "申报", "申请", "参赛", "竞赛", "比赛", "award", "submission", "application"]
+        var normalizedName = folderName.lowercased()
+        guard markers.contains(where: { normalizedName.contains($0) }) else { return nil }
+        for marker in markers {
+            normalizedName = normalizedName.replacingOccurrences(of: marker, with: " ")
+        }
+        normalizedName = normalizedName
+            .replacingOccurrences(of: #"\d{3,8}"#, with: " ", options: .regularExpression)
+            .replacingOccurrences(of: #"[_\-\s]+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return normalizedName.count >= 2 ? normalizedName : nil
     }
 
     private static func mergeCounts(
@@ -519,6 +583,12 @@ enum FolderKnowledgeIndex {
         "user", "do", "like", "will", "can", "may", "we", "our", "they", "their", "which", "what",
         "when", "where", "who", "how", "why", "also", "than", "then", "all", "any", "each", "other",
         "more", "most", "some", "such", "only", "own", "same", "too", "very", "day", "long",
+        "after", "before", "because", "about", "between", "through", "during", "under", "over", "again",
+        "once", "first", "later", "however", "therefore", "thus", "still", "even", "much", "many",
+        "make", "makes", "made", "give", "gives", "show", "shows", "use", "used", "using", "try",
+        "believe", "think", "know", "learn", "read", "reading", "way", "ways", "people", "person",
+        "information", "claim", "claims", "answer", "conversation", "situation", "method", "tools",
+        "new", "bad", "wrong", "correct", "simple", "common", "times", "piece", "behind", "quite",
         "的", "了", "和", "与", "及", "是", "在", "为", "对", "将", "中", "有", "一个", "文件", "文档", "内容",
         "什么", "为什么", "不同", "重要", "问题", "可以", "这个", "没有", "进行", "以及", "通过", "需要"
     ]

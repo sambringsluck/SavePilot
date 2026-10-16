@@ -260,6 +260,13 @@ struct SavePilotSelfTest {
         guard EvidenceRanker.rank([tiedA, tiedB]) == nil else {
             throw SelfTestError.failed("ambiguous evidence abstention")
         }
+        guard !EvidenceRanker.allowsTopicOnlyRouting(
+            coherence: 0.08, sampledFiles: 11, pathMatch: 0
+        ), EvidenceRanker.allowsTopicOnlyRouting(
+            coherence: 0.08, sampledFiles: 11, pathMatch: 0.12
+        ), EvidenceRanker.allowsTopicOnlyRouting(
+            coherence: 0.40, sampledFiles: 18, pathMatch: 0
+        ) else { throw SelfTestError.failed("mixed project folder intent gate") }
     }
 
     private static func testMemoryRejectsUnrelatedSameFormat() throws {
@@ -482,6 +489,18 @@ struct SavePilotSelfTest {
         try FileMover.undo(record)
         guard FileManager.default.fileExists(atPath: source.path) else {
             throw SelfTestError.failed("rename undo")
+        }
+
+        let scan = root.appendingPathComponent("scan001.pdf")
+        let invoice = ExtractedContent(
+            text: "Invoice number A-102. Amount due and tax. Date 2026-10-16.",
+            kind: "PDF / OCR",
+            summary: "invoice amount due tax"
+        )
+        guard FileNameSuggester.suggest(
+            source: scan, content: invoice, academic: nil
+        )?.fileName == "发票_2026-10-16.pdf" else {
+            throw SelfTestError.failed("non-academic filename suggestion")
         }
     }
 

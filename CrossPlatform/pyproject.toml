@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "savepilot"
+version = "1.1.0"
+description = "Local-first, human-confirmed file classification for Windows, Linux and macOS"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "SavePilot contributors"}]
+dependencies = []
+
+[project.optional-dependencies]
+pdf = ["pypdf>=5.0"]
+ocr = ["Pillow>=10.0", "pytesseract>=0.3.13"]
+full = ["pypdf>=5.0", "Pillow>=10.0", "pytesseract>=0.3.13"]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+savepilot = "savepilot.cli:main"
+savepilot-gui = "savepilot.gui:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

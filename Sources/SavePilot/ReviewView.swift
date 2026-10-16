@@ -233,29 +233,31 @@ private struct SuggestionDetail: View {
                         .padding(8)
                 }
 
-                GroupBox("推荐文件名") {
-                    VStack(alignment: .leading, spacing: 10) {
-                        TextField(suggestion.source.lastPathComponent, text: $editedFileName)
-                            .textFieldStyle(.roundedBorder)
-                            .font(.system(.body, design: .monospaced))
-                        HStack {
-                            if editedFileName != suggestion.source.lastPathComponent {
-                                Label("将从“\(suggestion.source.lastPathComponent)”重命名", systemImage: "pencil.and.outline")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            } else {
-                                Label("保持原文件名", systemImage: "doc")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                if suggestion.proposedFileName != suggestion.source.lastPathComponent {
+                    GroupBox("推荐文件名") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            TextField(suggestion.source.lastPathComponent, text: $editedFileName)
+                                .textFieldStyle(.roundedBorder)
+                                .font(.system(.body, design: .monospaced))
+                            HStack {
+                                if editedFileName != suggestion.source.lastPathComponent {
+                                    Label("将从“\(suggestion.source.lastPathComponent)”重命名", systemImage: "pencil.and.outline")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                } else {
+                                    Label("保持原文件名", systemImage: "doc")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Button("使用原名") { editedFileName = suggestion.source.lastPathComponent }
                             }
-                            Spacer()
-                            Button("使用原名") { editedFileName = suggestion.source.lastPathComponent }
+                            Text("扩展名会强制保留；只有确认后才会重命名。")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
-                        Text("扩展名会强制保留；只有确认后才会重命名。")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        .padding(8)
                     }
-                    .padding(8)
                 }
 
                 HStack {

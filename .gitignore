@@ -1,6 +1,10 @@
 .DS_Store
 .build/
 dist/
+dist-cross-platform/
+CrossPlatform/build/
+CrossPlatform/src/*.egg-info/
+CrossPlatform/**/__pycache__/
 DerivedData/
 *.xcuserstate
 xcuserdata/

@@ -20,7 +20,7 @@ The product optimizes for precision and recoverability, not for moving the large
 - Precision first: abstain or keep the file in place when evidence is weak.
 - Existing structure first: reuse coherent folders before proposing a new folder.
 - Reusable granularity: prefer `物理` over `学习` for clear physics material, but never create a bespoke folder from one document title.
-- Local first: extraction, OCR, folder profiles, user profile, and feedback memory remain on the Mac. Cloud models are opt-in refiners.
+- Local first: extraction, OCR, folder profiles, user profile, and feedback memory remain on the user's device. Cloud models are opt-in refiners.
 - Weak personal priors: user history may break a close tie but may not invent a subject unsupported by the current file.
 - Reversible operations: collision-safe moves and undo; never overwrite.
 
@@ -42,6 +42,8 @@ After the file becomes stable on disk:
 6. Recommend an existing folder, a reusable new folder, or abstention.
 7. If the filename is low-information, propose an editable content-derived name while preserving the extension.
 8. Move and/or rename only after confirmation.
+
+A project-intent gate separates topical similarity from destination purpose. A mixed submission folder may contain copied references that resemble an incoming file; that resemblance is insufficient unless the folder has a coherent majority theme or the current file names the project anchor.
 
 ### 4.3 Folder audit
 
@@ -122,6 +124,7 @@ Maintain a private, local-only golden set of user-approved cases such as physics
 - P2: optional local embedding model for multilingual semantic retrieval, evaluated against the same abstention gates.
 - P2: active learning that asks for labels only on high-value uncertain cases.
 - P2: app-specific integrations where a source application exposes a supported automation or extension API.
+- Delivered compatibility baseline: Python GUI/CLI, local indexing, polling monitor, OpenXML, optional PDF/OCR, and confirmation-safe moves on Windows/Linux/macOS.
 
 ## 11. Non-goals and platform limits
 

@@ -22,6 +22,19 @@ struct FolderEvidenceRanking: Sendable {
 /// absolute-quality and winner-margin gate. This keeps one noisy signal from
 /// overpowering the others and explicitly abstains on close or weak results.
 enum EvidenceRanker {
+    /// Topic similarity alone is unsafe for a heterogeneous project folder:
+    /// one resident reference can closely match an incoming document even
+    /// though the folder's actual purpose is unrelated. A literal path match
+    /// may override this gate; topic-only routing needs a stable multi-file
+    /// majority theme.
+    static func allowsTopicOnlyRouting(
+        coherence: Double,
+        sampledFiles: Int,
+        pathMatch: Double
+    ) -> Bool {
+        pathMatch >= 0.12 || (sampledFiles >= 2 && coherence >= 0.18)
+    }
+
     static func rank(_ candidates: [FolderEvidenceCandidate]) -> FolderEvidenceRanking? {
         guard candidates.count >= 2 else { return nil }
 
