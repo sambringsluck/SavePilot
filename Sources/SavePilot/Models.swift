@@ -61,6 +61,47 @@ struct FileSuggestion: Identifiable, Hashable {
     }
 }
 
+enum SuggestionDependencyResolver {
+    static func relocationPrerequisite(
+        for suggestion: FileSuggestion,
+        in suggestions: [FileSuggestion]
+    ) -> FileSuggestion? {
+        let target = suggestion.finalDestinationFolder.standardizedFileURL.path
+        return suggestions.first { candidate in
+            guard candidate.id != suggestion.id,
+                  (try? candidate.source.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+            else { return false }
+            return candidate.finalDestinationURL.standardizedFileURL.path == target
+        }
+    }
+
+    static func retargetDependents(
+        in suggestions: [FileSuggestion],
+        from plannedFolder: URL,
+        to actualFolder: URL,
+        reasonSuffix: String
+    ) -> [FileSuggestion] {
+        let plannedPath = plannedFolder.standardizedFileURL.path
+        return suggestions.map { suggestion in
+            guard suggestion.finalDestinationFolder.standardizedFileURL.path == plannedPath else {
+                return suggestion
+            }
+            return FileSuggestion(
+                id: suggestion.id,
+                source: suggestion.source,
+                destinationFolder: actualFolder,
+                proposedFolderName: "",
+                reason: suggestion.reason + reasonSuffix,
+                summary: suggestion.summary,
+                confidence: suggestion.confidence,
+                createsFolder: false,
+                detectedAt: suggestion.detectedAt,
+                proposedFileName: suggestion.proposedFileName
+            )
+        }
+    }
+}
+
 struct MoveRecord: Codable, Identifiable {
     let id: UUID
     let sourcePath: String

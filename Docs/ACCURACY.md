@@ -13,7 +13,7 @@ SavePilot treats a directory as a mutable label rather than ground truth. Its de
 
 The graph is deliberately bounded rather than a blind whole-disk crawl. It covers authorized archive roots, Desktop, Downloads, and configured watch roots. Startup pre-reads up to 160 recent loose files so queue order cannot change the first answer; folder nodes use adaptive, time- and format-diverse majority sampling (normally up to 18 files per folder). System libraries, application bundles, caches, managed media libraries, and build outputs stay outside the graph. Confirmations and corrections update it incrementally.
 
-When a candidate folder's own content matches but its parent purpose conflicts, SavePilot keeps the candidate identity and emits a separate whole-folder relocation proposal. The incoming file still joins that candidate; if handled first, it later travels with the folder. This avoids both rejecting a semantically correct folder and creating a duplicate corrected folder merely because the user processed suggestions out of order.
+When a candidate folder's own content matches but its parent purpose conflicts, SavePilot keeps the candidate identity and emits a prerequisite whole-folder relocation proposal. The dependent file displays the folder's planned corrected path and cannot be confirmed until that prerequisite is accepted or rejected. Acceptance synchronizes the actual path, including collision suffixes; rejection sends dependents back to the folder's current path. This avoids rejecting a semantically correct folder or accidentally creating a duplicate destination.
 
 ## Boundary corpus
 

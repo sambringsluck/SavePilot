@@ -206,6 +206,14 @@ private struct SuggestionDetail: View {
                         }
                         Text(suggestion.reason)
                             .foregroundStyle(.secondary)
+                        if let prerequisite = model.relocationPrerequisite(for: suggestion) {
+                            Label(
+                                "请先在左侧确认或拒绝“\(prerequisite.source.lastPathComponent)”的文件夹迁移建议",
+                                systemImage: "arrow.triangle.branch"
+                            )
+                            .font(.caption.bold())
+                            .foregroundStyle(.orange)
+                        }
                         Divider()
                         Text("直接修改目标路径")
                             .font(.caption.bold())
@@ -275,6 +283,7 @@ private struct SuggestionDetail: View {
                     }
                         .buttonStyle(.borderedProminent)
                         .keyboardShortcut(.defaultAction)
+                        .disabled(model.relocationPrerequisite(for: suggestion) != nil)
                 }
             }
             .padding(28)

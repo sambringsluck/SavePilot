@@ -31,11 +31,12 @@ struct SavePilotSelfTest {
         try testDocumentRelationshipHardNegative()
         try testFolderHierarchyRelationships()
         try testFolderRelocationPlanning()
+        try testFolderRelocationDependencyTransitions()
         try testLowCoherenceProjectNeedsIdentityAnchor()
         try testEmbeddingCandidateShortlist()
         try testFolderRelocationAndUndo()
         try testFileNameSuggestionAndRename()
-        print("SavePilot self-test: 28/28 passed")
+        print("SavePilot self-test: 29/29 passed")
     }
 
     private static func testExistingFolderSuggestion() throws {
@@ -719,6 +720,45 @@ struct SavePilotSelfTest {
         )
         guard recommendation?.destination.standardizedFileURL.path != hill.standardizedFileURL.path else {
             throw SelfTestError.failed("low-coherence project accepted without identity anchor")
+        }
+    }
+
+    private static func testFolderRelocationDependencyTransitions() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let child = root.appendingPathComponent("lang/ieo_research", isDirectory: true)
+        try FileManager.default.createDirectory(at: child, withIntermediateDirectories: true)
+        let loose = root.appendingPathComponent("new-ieo-notes.pdf")
+        try Data("economics".utf8).write(to: loose)
+        let planned = root.appendingPathComponent("IEO经济学竞赛", isDirectory: true)
+        let folderSuggestion = FileSuggestion(
+            id: UUID(), source: child, destinationFolder: root,
+            proposedFolderName: "", reason: "relocate", summary: "", confidence: 0.9,
+            createsFolder: false, detectedAt: Date(), proposedFileName: planned.lastPathComponent
+        )
+        let fileSuggestion = FileSuggestion(
+            id: UUID(), source: loose, destinationFolder: planned,
+            proposedFolderName: "", reason: "dependent", summary: "", confidence: 0.8,
+            createsFolder: false, detectedAt: Date()
+        )
+        let queue = [folderSuggestion, fileSuggestion]
+        guard SuggestionDependencyResolver.relocationPrerequisite(
+            for: fileSuggestion, in: queue
+        )?.id == folderSuggestion.id else {
+            throw SelfTestError.failed("folder relocation prerequisite detection")
+        }
+        let actual = root.appendingPathComponent("IEO经济学竞赛 2", isDirectory: true)
+        let afterMove = SuggestionDependencyResolver.retargetDependents(
+            in: queue, from: planned, to: actual, reasonSuffix: "; moved"
+        )
+        guard afterMove[1].finalDestinationFolder.standardizedFileURL.path == actual.standardizedFileURL.path else {
+            throw SelfTestError.failed("dependent actual-path synchronization")
+        }
+        let afterRejection = SuggestionDependencyResolver.retargetDependents(
+            in: queue, from: planned, to: child, reasonSuffix: "; rejected"
+        )
+        guard afterRejection[1].finalDestinationFolder.standardizedFileURL.path == child.standardizedFileURL.path else {
+            throw SelfTestError.failed("dependent rejection fallback")
         }
     }
 

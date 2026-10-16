@@ -259,8 +259,18 @@ final class AppModel: ObservableObject {
     }
 
     func confirm(_ suggestion: FileSuggestion, fileName rawFileName: String? = nil) {
+        if let prerequisite = relocationPrerequisite(for: suggestion) {
+            state = .error("请先处理文件夹“\(prerequisite.source.lastPathComponent)”的迁移建议；完成后本文件会自动使用其实际新路径。")
+            return
+        }
         state = .moving
         do {
+            let originalQueuedSuggestion = suggestions.first { $0.id == suggestion.id }
+            let plannedDirectoryPath = originalQueuedSuggestion.flatMap { queued -> URL? in
+                (try? queued.source.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+                    ? queued.finalDestinationURL
+                    : nil
+            }
             let approvedFileName = normalizedFileName(
                 rawFileName ?? suggestion.proposedFileName,
                 source: suggestion.source
@@ -287,6 +297,14 @@ final class AppModel: ObservableObject {
             )
             ignoredPaths.insert(record.destinationPath)
             moveHistory.insert(record, at: 0)
+            if let plannedDirectoryPath {
+                suggestions = SuggestionDependencyResolver.retargetDependents(
+                    in: suggestions,
+                    from: plannedDirectoryPath,
+                    to: URL(fileURLWithPath: record.destinationPath, isDirectory: true),
+                    reasonSuffix: "；候选文件夹已迁移，目标已同步为实际落地路径"
+                )
+            }
             suggestions.removeAll { $0.id == suggestion.id }
             persistHistory()
             state = suggestions.isEmpty ? .waiting : .ready
@@ -358,6 +376,14 @@ final class AppModel: ObservableObject {
         )
         learningSummary = learningStore.summary
         ignoredPaths.insert(suggestion.source.path)
+        if (try? suggestion.source.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
+            suggestions = SuggestionDependencyResolver.retargetDependents(
+                in: suggestions,
+                from: suggestion.finalDestinationURL,
+                to: suggestion.source,
+                reasonSuffix: "；你已拒绝候选文件夹迁移，目标已回退到该文件夹当前位置"
+            )
+        }
         suggestions.removeAll { $0.id == suggestion.id }
         state = suggestions.isEmpty ? .waiting : .ready
     }
@@ -371,6 +397,10 @@ final class AppModel: ObservableObject {
         } catch {
             state = .error(error.localizedDescription)
         }
+    }
+
+    func relocationPrerequisite(for suggestion: FileSuggestion) -> FileSuggestion? {
+        SuggestionDependencyResolver.relocationPrerequisite(for: suggestion, in: suggestions)
     }
 
     func resetLearning() {
@@ -701,9 +731,9 @@ final class AppModel: ObservableObject {
         return FileSuggestion(
             id: suggestion.id,
             source: suggestion.source,
-            destinationFolder: child,
+            destinationFolder: plannedFolder,
             proposedFolderName: "",
-            reason: "目录层级图校验：文件内容适合候选目录“\(child.lastPathComponent)”，但该目录与上级“\(URL(fileURLWithPath: conflict.parentPath).lastPathComponent)”存在 \(conflict.parentSubject)→\(conflict.childSubject) 主题冲突。已同时生成该文件夹迁移建议；迁移后的路径为“\(plannedFolder.path)”。若先处理本文件，它会随整个候选文件夹一起迁移。",
+            reason: "目录层级图校验：文件内容适合候选目录“\(child.lastPathComponent)”，但该目录与上级“\(URL(fileURLWithPath: conflict.parentPath).lastPathComponent)”存在 \(conflict.parentSubject)→\(conflict.childSubject) 主题冲突。已先生成文件夹迁移建议；本文件的目标使用迁移后的正确路径“\(plannedFolder.path)”。",
             summary: suggestion.summary,
             confidence: max(0.78, min(suggestion.confidence, conflict.confidence)),
             createsFolder: false,

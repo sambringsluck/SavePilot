@@ -46,7 +46,7 @@ After the file becomes stable on disk:
 
 A project-intent gate separates topical similarity from destination purpose. A mixed submission folder may contain copied references that resemble an incoming file; that resemblance is insufficient unless the folder has a coherent majority theme or the current file names the project anchor.
 
-If the chosen candidate folder is itself under an incompatible parent, SavePilot does not discard a correct content match. It creates a separate, independently confirmable relocation suggestion for the whole candidate folder and explains its planned final path on the file suggestion. Processing the file first is safe because it joins the same folder object and travels with that folder later.
+If the chosen candidate folder is itself under an incompatible parent, SavePilot does not discard a correct content match. It first creates a relocation prerequisite for the whole candidate folder and shows the planned final folder on dependent file suggestions. Those files pause until the folder decision is made; acceptance synchronizes its actual new path, while rejection returns them to the current folder path.
 
 ### 4.3 Folder audit
 
