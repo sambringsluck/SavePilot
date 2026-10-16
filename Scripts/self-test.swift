@@ -12,6 +12,7 @@ struct SavePilotSelfTest {
         try testStableHistoryFolderSuggestion()
         try testPersonalMemoryAndNovelThemeThreshold()
         try testFolderThemeAudit()
+        try testFolderAuditIncludesChildFolders()
         try testMoveCollisionAndUndo()
         try testUnknownFormatSuggestion()
         try testFilenameStopWordsDoNotRoute()
@@ -24,8 +25,11 @@ struct SavePilotSelfTest {
         try testGenericTechnicalFolderNeedsProjectContext()
         try testMemoryKeepsSeparateTopicsAndHonorsRejection()
         try testNumberedSeriesConsensus()
+        try testDocumentRelationshipConsensus()
+        try testGenericBridgeCannotContaminateNamedProject()
+        try testDocumentRelationshipHardNegative()
         try testFileNameSuggestionAndRename()
-        print("SavePilot self-test: 18/18 passed")
+        print("SavePilot self-test: 22/22 passed")
     }
 
     private static func testExistingFolderSuggestion() throws {
@@ -130,6 +134,52 @@ struct SavePilotSelfTest {
         let outliers = FolderAuditEngine.findOutliers(in: documents)
         guard outliers.contains(where: { $0.document.url.lastPathComponent == "vacation-itinerary.txt" })
         else { throw SelfTestError.failed("folder theme outlier") }
+    }
+
+    private static func testFolderAuditIncludesChildFolders() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let nested = root.appendingPathComponent("ieo_research", isDirectory: true)
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        for index in 1...5 {
+            try Data("language grammar reading essay vocabulary".utf8).write(
+                to: root.appendingPathComponent("language-\(index).txt")
+            )
+        }
+        let entries = FolderAuditEngine.candidateEntries(in: root)
+        guard entries.contains(where: { $0.standardizedFileURL == nested.standardizedFileURL }) else {
+            throw SelfTestError.failed("folder audit must include child directories")
+        }
+
+        let language = (1...5).map { index in
+            FolderAuditDocument(
+                url: root.appendingPathComponent("language-\(index).txt"),
+                content: ExtractedContent(
+                    text: "language grammar reading essay vocabulary literature syntax",
+                    kind: "文本", summary: "language"
+                )
+            )
+        }
+        let documents = language + [FolderAuditDocument(
+            url: nested,
+            content: ExtractedContent(
+                text: "IEO economics olympiad microeconomics macroeconomics supply demand competition problem bank",
+                kind: "文件夹主题样本", summary: "economics competition"
+            )
+        )]
+        guard DocumentRelationshipEngine.specificTopicName(
+            for: documents.last!.url, content: documents.last!.content
+        ) == "IEO经济学竞赛" else { throw SelfTestError.failed("IEO project topic") }
+        let sat = ExtractedContent(
+            text: "SAT PSAT reading writing math question bank practice test answers and modules",
+            kind: "文件夹主题样本", summary: "SAT research corpus"
+        )
+        guard DocumentRelationshipEngine.specificTopicName(
+            for: root.appendingPathComponent("sat_research"), content: sat
+        ) == "SAT备考研究" else { throw SelfTestError.failed("SAT project topic") }
+        guard FolderAuditEngine.findOutliers(in: documents, parentFolder: root.appendingPathComponent("lang")).contains(where: {
+            $0.document.url.standardizedFileURL == nested.standardizedFileURL
+        }) else { throw SelfTestError.failed("misnested child-folder outlier") }
     }
 
     private static func testMoveCollisionAndUndo() throws {
@@ -465,6 +515,86 @@ struct SavePilotSelfTest {
         guard resolved.allSatisfy({ $0.finalDestinationFolder.standardizedFileURL == project.standardizedFileURL }) else {
             throw SelfTestError.failed("numbered series consensus")
         }
+    }
+
+    private static func testDocumentRelationshipConsensus() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let modeling = root.appendingPathComponent("建模2.docx")
+        let discussion = root.appendingPathComponent("金融数据问题讨论.md")
+        let firstContent = ExtractedContent(
+            text: "投资组合模型在风险约束下优化股票资产配置，使预期收益最大，并讨论标准差。",
+            kind: "Office 文档", summary: "投资组合风险收益优化模型"
+        )
+        let secondContent = ExtractedContent(
+            text: "用 Markowitz portfolio optimization 分配股票和银行资产，权衡 expected return 与 volatility risk。",
+            kind: "Markdown", summary: "金融资产配置建模讨论"
+        )
+        let suggestions = [
+            FileSuggestion(id: UUID(), source: modeling, destinationFolder: root, proposedFolderName: "数学", reason: "旧判断", summary: firstContent.summary, confidence: 0.7, createsFolder: true, detectedAt: Date()),
+            FileSuggestion(id: UUID(), source: discussion, destinationFolder: root, proposedFolderName: "财务", reason: "旧判断", summary: secondContent.summary, confidence: 0.7, createsFolder: true, detectedAt: Date())
+        ]
+        let resolved = RelatedFileConsensus.consolidate(
+            suggestions,
+            contents: [modeling.standardizedFileURL.path: firstContent, discussion.standardizedFileURL.path: secondContent],
+            roots: [root]
+        )
+        guard resolved.allSatisfy({
+            $0.finalDestinationFolder.lastPathComponent == "数学建模进阶课"
+                && $0.reason.contains("文件关系图")
+        }) else { throw SelfTestError.failed("cross-root document relationship consensus") }
+    }
+
+    private static func testDocumentRelationshipHardNegative() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let article = ExtractedContent(
+            text: "Van der Linden studies misinformation repetition and perceived truth.",
+            kind: "Office 文档", summary: "misinformation reader response"
+        )
+        let submission = ExtractedContent(
+            text: "Van der Linden is cited once in a student submission bibliography for an unrelated geometry project.",
+            kind: "PDF", summary: "student project bibliography"
+        )
+        guard DocumentRelationshipEngine.compare(
+            lhsURL: root.appendingPathComponent("van Linden.docx"), lhs: article,
+            rhsURL: root.appendingPathComponent("数学竞赛提交.pdf"), rhs: submission
+        ) == nil else { throw SelfTestError.failed("author-only hard negative") }
+    }
+
+    private static func testGenericBridgeCannotContaminateNamedProject() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let modeling = root.appendingPathComponent("建模2.docx")
+        let discussion = root.appendingPathComponent("金融数据问题讨论.md")
+        let unrelated = root.appendingPathComponent("van Linden.docx")
+        let first = ExtractedContent(
+            text: "投资组合模型在风险约束下优化股票资产配置，使预期收益最大，并讨论标准差。",
+            kind: "Office", summary: "投资组合风险收益优化模型"
+        )
+        let second = ExtractedContent(
+            text: "Markowitz portfolio optimization uses stock and bank asset constraints for expected return and volatility risk.",
+            kind: "Markdown", summary: "portfolio model"
+        )
+        // Deliberately shares broad finance words with the project but lacks
+        // its optimization/model intent, simulating a graph bridge.
+        let third = ExtractedContent(
+            text: "A general discussion of risk, return, stock markets, assets and public information.",
+            kind: "Office", summary: "general article"
+        )
+        let inputs = [modeling, discussion, unrelated]
+        let suggestions = inputs.map {
+            FileSuggestion(id: UUID(), source: $0, destinationFolder: root, proposedFolderName: "", reason: "保留", summary: "", confidence: 0.5, createsFolder: false, detectedAt: Date())
+        }
+        let resolved = RelatedFileConsensus.consolidate(
+            suggestions,
+            contents: [modeling.path: first, discussion.path: second, unrelated.path: third],
+            roots: [root]
+        )
+        guard resolved[0].finalDestinationFolder.lastPathComponent == "数学建模进阶课",
+              resolved[1].finalDestinationFolder.lastPathComponent == "数学建模进阶课",
+              resolved[2].finalDestinationFolder.standardizedFileURL == root.standardizedFileURL
+        else { throw SelfTestError.failed("generic graph bridge contamination") }
     }
 
     private static func testFileNameSuggestionAndRename() throws {

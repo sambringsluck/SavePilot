@@ -25,4 +25,4 @@ macOS Accessibility can observe many system save panels. Windows UI Automation a
 
 ## Release validation
 
-The repository runs Swift self-tests, synthetic Oracle tests, real-file knowledge replay on macOS, and dependency-free Python unit tests. The Python wheel is tagged `py3-none-any`, meaning it contains no platform-specific binary. A real Windows and Linux release should additionally run the same tests in GitHub Actions on `windows-latest` and `ubuntu-latest`; UI and OS packaging remain platform smoke tests rather than being inferred from macOS.
+The repository runs Swift self-tests, synthetic Oracle tests, boundary hard-case evaluation, real-file knowledge replay on macOS, and dependency-free Python unit tests. GitHub Actions runs the portable core on `windows-latest`, `ubuntu-latest`, and `macos-latest` with Python 3.10 and 3.13. The wheel is tagged `py3-none-any`; UI behavior and native OS packaging still require platform smoke tests rather than being inferred from core CI.

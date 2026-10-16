@@ -66,7 +66,7 @@ enum AcademicSubjectClassifier {
         .init(folder: "历史", aliases: ["history", "historical", "world history", "global history", "历史", "世界史", "通史"], keywords: [
             "civilization", "empire", "ancient", "medieval", "revolution", "dynasty", "war", "文明", "帝国", "古代", "中世纪", "革命", "王朝"
         ]),
-        .init(folder: "语言", aliases: ["language", "linguistics", "english", "chinese", "语言", "英语", "语文"], keywords: [
+        .init(folder: "语言", aliases: ["language", "lang", "linguistics", "english", "chinese", "语言", "英语", "语文"], keywords: [
             "grammar", "vocabulary", "reading", "writing", "literature", "essay", "syntax", "语法", "词汇", "阅读", "写作", "文学"
         ])
     ]

@@ -9,6 +9,7 @@ from savepilot.core import (
     FolderProfile,
     classify_subject,
     confirm_move,
+    document_relationship,
     recommend,
     suggest_filename,
 )
@@ -36,7 +37,7 @@ class SavePilotCoreTests(unittest.TestCase):
             root = Path(temporary)
             source = root / "van Linden.docx"
             source.write_text("misinformation repetition truth memory", encoding="utf-8")
-            project = root / "丘成桐提交_0915"
+            project = root / "数学竞赛提交_0915"
             nested = project / "research_extension"
             nested.mkdir(parents=True)
             profiles = [
@@ -57,6 +58,25 @@ class SavePilotCoreTests(unittest.TestCase):
             moved = confirm_move(suggestion)
             self.assertEqual(moved.name, "physics 2.pdf")
             self.assertEqual((target / "physics.pdf").read_bytes(), b"existing")
+
+    def test_cross_folder_document_relationship(self):
+        relation = document_relationship(
+            "建模2.docx",
+            "投资组合模型在风险约束下优化股票资产配置，使预期收益最大并讨论标准差。",
+            "金融数据问题讨论.md",
+            "Markowitz portfolio optimization 分配股票与银行资产，权衡 expected return 和 volatility risk。",
+        )
+        self.assertIsNotNone(relation)
+        self.assertEqual(relation.topic_name, "数学建模进阶课")
+
+    def test_author_overlap_is_a_hard_negative(self):
+        relation = document_relationship(
+            "van Linden.docx",
+            "Van der Linden studies misinformation repetition and perceived truth.",
+            "数学竞赛提交.pdf",
+            "Van der Linden is cited once in a bibliography for an unrelated geometry project.",
+        )
+        self.assertIsNone(relation)
 
 
 if __name__ == "__main__":

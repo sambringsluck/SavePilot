@@ -49,6 +49,7 @@ final class AppModel: ObservableObject {
     private var folderKnowledgeProfiles = FolderKnowledgeIndex.load()
     private var pendingURLs: [(url: URL, allowExisting: Bool)] = []
     private var processingQueue = false
+    private var recentContentByPath: [String: ExtractedContent] = [:]
 
     init() {
         loadSettings()
@@ -428,6 +429,11 @@ final class AppModel: ObservableObject {
         let content = await Task.detached(priority: .userInitiated) {
             await ContentExtractor.extract(from: url)
         }.value
+        recentContentByPath[url.standardizedFileURL.path] = content
+        if recentContentByPath.count > 240 {
+            let active = Set(suggestions.suffix(180).map { $0.source.standardizedFileURL.path })
+            recentContentByPath = recentContentByPath.filter { active.contains($0.key) || $0.key == url.standardizedFileURL.path }
+        }
         let suggestionEngine = engine
         let userProfile = userProfileStore.snapshot
         let academicTopic = suggestionEngine.specificTopicMatch(
@@ -541,6 +547,11 @@ final class AppModel: ObservableObject {
         userProfileSummary = userProfileStore.snapshot.summary
         suggestions.append(suggestion)
         suggestions = SeriesConsensus.consolidate(suggestions, roots: roots)
+        suggestions = RelatedFileConsensus.consolidate(
+            suggestions,
+            contents: recentContentByPath,
+            roots: roots
+        )
         let emittedSuggestion = suggestions.first(where: { $0.id == suggestion.id }) ?? suggestion
         state = .ready
         SavePanelObserver.writeRuntimeDiagnostics(RuntimeDiagnostics(
@@ -654,9 +665,9 @@ final class AppModel: ObservableObject {
         folderAuditRunning = true
         defer { folderAuditRunning = false }
 
-        let files = FolderAuditEngine.candidateFiles(in: folder, limit: 80)
+        let files = FolderAuditEngine.candidateEntries(in: folder, limit: 80)
         guard files.count >= 5 else {
-            folderAuditStatus = "“\(folder.lastPathComponent)”中可分析的顶层文件不足 5 个。"
+            folderAuditStatus = "“\(folder.lastPathComponent)”中可分析的顶层文件或子文件夹不足 5 个。"
             return
         }
 
@@ -668,7 +679,7 @@ final class AppModel: ObservableObject {
             let extracted = await withTaskGroup(of: FolderAuditDocument.self) { group in
                 for url in chunk {
                     group.addTask {
-                        FolderAuditDocument(url: url, content: await ContentExtractor.extract(from: url))
+                        await FolderAuditEngine.auditDocument(for: url)
                     }
                 }
                 var values: [FolderAuditDocument] = []
@@ -680,7 +691,7 @@ final class AppModel: ObservableObject {
 
         folderAuditStatus = "正在比较主题相似度…"
         let outliers = await Task.detached(priority: .userInitiated) {
-            FolderAuditEngine.findOutliers(in: documents)
+            FolderAuditEngine.findOutliers(in: documents, parentFolder: folder)
         }.value
         guard !outliers.isEmpty else {
             folderAuditStatus = "审计完成：\(files.count) 个文件的主题没有发现明显离群项。"
@@ -698,6 +709,32 @@ final class AppModel: ObservableObject {
         let auditUserProfile = userProfileStore.snapshot
         var added = 0
         for outlier in outliers {
+            let isDirectory = (try? outlier.document.url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+                || outlier.document.content.signals.contains("子文件夹主题")
+            if isDirectory,
+               let projectTopic = DocumentRelationshipEngine.specificTopicName(
+                for: outlier.document.url, content: outlier.document.content
+               ),
+               let root = roots.first?.standardizedFileURL {
+                let target = root.appendingPathComponent(projectTopic, isDirectory: true)
+                let exists = FileManager.default.fileExists(atPath: target.path)
+                let suggestion = FileSuggestion(
+                    id: UUID(),
+                    source: outlier.document.url,
+                    destinationFolder: exists ? target : root,
+                    proposedFolderName: exists ? "" : projectTopic,
+                    reason: "文件夹审计：子目录内容与父目录用途不一致；文件关系图识别为独立项目“\(projectTopic)”",
+                    summary: outlier.document.content.summary,
+                    confidence: 0.90,
+                    createsFolder: !exists,
+                    detectedAt: Date()
+                )
+                if !suggestions.contains(where: { $0.source.standardizedFileURL == suggestion.source.standardizedFileURL }) {
+                    suggestions.append(suggestion)
+                    added += 1
+                }
+                continue
+            }
             if let learned = learningStore.recommendation(
                 for: outlier.document.url,
                 content: outlier.document.content,

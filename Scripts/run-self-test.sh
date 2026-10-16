@@ -10,8 +10,11 @@ swiftc \
   Sources/SavePilot/AcademicSubjectClassifier.swift \
   Sources/SavePilot/FileNameSuggester.swift \
   Sources/SavePilot/MarkdownContentNormalizer.swift \
+  Sources/SavePilot/AdvancedExtractors.swift \
+  Sources/SavePilot/ContentExtractor.swift \
   Sources/SavePilot/EvidenceRanker.swift \
   Sources/SavePilot/SeriesConsensus.swift \
+  Sources/SavePilot/DocumentRelationshipEngine.swift \
   Sources/SavePilot/SuggestionEngine.swift \
   Sources/SavePilot/LearningStore.swift \
   Sources/SavePilot/FolderAuditEngine.swift \

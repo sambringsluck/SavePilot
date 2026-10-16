@@ -10,4 +10,5 @@ DerivedData/
 xcuserdata/
 *.zip
 *.dSYM/
+Training/generated/
 

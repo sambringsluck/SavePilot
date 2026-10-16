@@ -1,8 +1,8 @@
-# SavePilot 1.0 Product Requirements Document
+# SavePilot Product Requirements Document
 
 ## 1. Product definition
 
-SavePilot is a local-first macOS save companion. It observes Save/Save As panels, analyzes completed files across common and uncommon formats, recommends a destination and—when the original name is weak—a better filename. Every filesystem mutation requires explicit user confirmation.
+SavePilot is a local-first file intelligence companion for macOS, Windows, and Linux. It analyzes completed files across common and uncommon formats, recommends a destination and—when the original name is weak—a better filename. The macOS edition can additionally observe supported Save/Save As panels. Every filesystem mutation requires explicit user confirmation.
 
 The product optimizes for precision and recoverability, not for moving the largest possible number of files.
 
@@ -37,17 +37,18 @@ After the file becomes stable on disk:
 1. Extract text, structure, OCR, media metadata, archive inventory, or system metadata.
 2. Resolve a specific subject or domain using title and body evidence.
 3. Retrieve candidates from confirmed personal memory and the folder-content index.
-4. Fuse filename, body topic, shared entities, graph/hyperedge links, directory labels, and format habits.
-5. Apply the user-profile prior only when the current file already has multiple matching signals.
-6. Recommend an existing folder, a reusable new folder, or abstention.
-7. If the filename is low-information, propose an editable content-derived name while preserving the extension.
-8. Move and/or rename only after confirmation.
+4. Build file-to-file relations across organized and loose files; treat current directories as fallible labels.
+5. Fuse filename, body topic, shared entities, graph/hyperedge links, directory labels, and format habits.
+6. Apply the user-profile prior only when the current file already has multiple matching signals.
+7. Recommend an existing folder, a reusable new folder, or abstention.
+8. If the filename is low-information, propose an editable content-derived name while preserving the extension.
+9. Move and/or rename only after confirmation.
 
 A project-intent gate separates topical similarity from destination purpose. A mixed submission folder may contain copied references that resemble an incoming file; that resemblance is insufficient unless the folder has a coherent majority theme or the current file names the project anchor.
 
 ### 4.3 Folder audit
 
-The user can select any folder. SavePilot builds a majority-topic profile, expands the sample when early files disagree, identifies strong outliers, and recommends alternative paths without changing the originals automatically.
+The user can select any folder. SavePilot builds a majority-topic profile, expands the sample when early files disagree, identifies strong file and child-folder outliers, and recommends alternative paths without changing the originals automatically. Parent-folder intent and child-folder content are scored separately so implementation artifacts do not mask a misplaced project.
 
 ## 5. Classification hierarchy
 
@@ -88,6 +89,8 @@ Example: `hw3.pdf` + “AP Physics C: Mechanics Homework #3” → `AP物理C_�
 
 `Scripts/oracle-eval.swift` generates development and untouched holdout cases for nine academic subjects plus adversarial non-academic files. The script reports accuracy, precision, recall, and confusion pairs, and fails the build when holdout quality falls below the declared gate.
 
+`Training/hard_case_corpus.py` separately generates boundary-focused file-pair cases and can adapt the public 20-Newsgroups corpus into positives and nearby-category hard negatives. These cases test the file relationship graph rather than only broad subject labels.
+
 This corpus is a regression oracle, not evidence of production accuracy and not model fine-tuning. Synthetic examples can expose deterministic regressions but cannot represent the user's full language, folder history, scans, or ambiguous real documents.
 
 ### 8.2 Real-file golden set
@@ -122,6 +125,7 @@ Maintain a private, local-only golden set of user-approved cases such as physics
 - P1: profile inspector with per-subject evidence, corrections, and opt-out controls.
 - P1: export/import anonymized training events and a local golden-set runner.
 - P2: optional local embedding model for multilingual semantic retrieval, evaluated against the same abstention gates.
+- P2: optional top-candidate reranker behind a provider interface; local Ollama first, cloud APIs only by explicit opt-in.
 - P2: active learning that asks for labels only on high-value uncertain cases.
 - P2: app-specific integrations where a source application exposes a supported automation or extension API.
 - Delivered compatibility baseline: Python GUI/CLI, local indexing, polling monitor, OpenXML, optional PDF/OCR, and confirmation-safe moves on Windows/Linux/macOS.

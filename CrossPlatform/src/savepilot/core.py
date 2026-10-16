@@ -31,6 +31,7 @@ STOP_WORDS = {
     "the", "and", "for", "with", "from", "that", "this", "are", "was", "were", "have", "has",
     "into", "file", "document", "page", "http", "https", "com", "www", "model", "article",
     "chapter", "section", "part", "version", "content", "type", "role", "message", "response",
+    "export", "scan", "scanned", "img", "image",
     "of", "to", "in", "is", "it", "as", "an", "be", "by", "on", "or", "not", "you", "your",
     "do", "like", "will", "can", "may", "we", "our", "they", "their", "which", "what", "when",
     "where", "who", "how", "why", "also", "than", "then", "all", "any", "each", "other", "more",
@@ -39,7 +40,7 @@ STOP_WORDS = {
     "therefore", "thus", "still", "even", "much", "many", "make", "makes", "made", "give", "gives",
     "show", "shows", "use", "used", "using", "try", "believe", "think", "know", "learn", "read",
     "reading", "way", "ways", "people", "person", "information", "claim", "claims", "answer",
-    "conversation", "situation", "method", "tools", "new", "bad", "wrong", "correct", "simple",
+    "conversation", "user", "assistant", "situation", "method", "tools", "new", "bad", "wrong", "correct", "simple",
     "common", "times", "piece", "behind", "quite", "的", "了", "和", "与", "及", "是", "在", "为",
     "对", "将", "中", "有", "一个", "文件", "文档", "内容", "什么", "为什么", "不同", "重要", "问题",
     "可以", "这个", "没有", "进行", "以及", "通过", "需要",
@@ -54,7 +55,7 @@ SUBJECTS = {
     "化学": (["chemistry", "化学"], ["molecule", "reaction", "organic", "compound", "acid", "base", "分子", "反应", "有机", "化合物", "酸碱"]),
     "生物": (["biology", "biological", "生物学", "生物"], ["cell", "genetics", "evolution", "ecology", "dna", "protein", "细胞", "遗传", "进化", "生态"]),
     "历史": (["history", "historical", "world history", "global history", "历史", "世界史", "通史"], ["civilization", "empire", "ancient", "medieval", "revolution", "dynasty", "文明", "帝国", "古代", "革命", "王朝"]),
-    "语言": (["language", "linguistics", "english", "chinese", "语言", "英语", "语文"], ["grammar", "vocabulary", "reading", "writing", "literature", "syntax", "语法", "词汇", "阅读", "写作"]),
+    "语言": (["language", "lang", "linguistics", "english", "chinese", "语言", "英语", "语文"], ["grammar", "vocabulary", "reading", "writing", "literature", "syntax", "语法", "词汇", "阅读", "写作"]),
 }
 
 GENERAL_CATEGORIES = {
@@ -65,6 +66,30 @@ GENERAL_CATEGORIES = {
     "旅行": ["travel", "flight", "hotel", "itinerary", "旅行", "航班", "酒店", "行程"],
     "代码": ["source code", "algorithm", "repository", "function", "class", "代码", "算法", "函数"],
 }
+
+RELATIONSHIP_SIGNATURES = [
+    (
+        "数学建模进阶课",
+        [
+            ["投资组合", "资产配置", "portfolio", "asset allocation"],
+            ["风险", "波动率", "标准差", "risk", "volatility", "standard deviation"],
+            ["收益", "回报", "return", "expected return"],
+            ["最优", "优化", "约束", "模型", "optimal", "optimization", "constraint", "markowitz"],
+            ["股票", "资产", "银行", "stock", "asset", "bank"],
+        ],
+        4,
+    ),
+    (
+        "IEO经济学竞赛",
+        [
+            ["ieo", "international economics olympiad", "国际经济学奥林匹克"],
+            ["微观经济", "宏观经济", "microeconomics", "macroeconomics"],
+            ["题库", "选拔赛", "真题", "problem set", "competition"],
+            ["经济学", "economics", "供给", "需求", "supply", "demand"],
+        ],
+        3,
+    ),
+]
 
 
 @dataclass(slots=True)
@@ -96,6 +121,14 @@ class Suggestion:
     @property
     def changes_name(self) -> bool:
         return Path(self.source).name != self.proposed_file_name
+
+
+@dataclass(slots=True)
+class DocumentRelationship:
+    score: float
+    shared_terms: list[str]
+    topic_name: str | None
+    evidence: list[str]
 
 
 def _read_limited(path: Path, limit: int = 512_000) -> str:
@@ -288,6 +321,40 @@ def _vector(counter: Counter[str]) -> dict[str, float]:
 def _cosine(lhs: dict[str, float], rhs: dict[str, float]) -> float:
     small, large = (lhs, rhs) if len(lhs) <= len(rhs) else (rhs, lhs)
     return sum(value * large.get(key, 0.0) for key, value in small.items())
+
+
+def document_relationship(
+    left_name: str,
+    left_text: str,
+    right_name: str,
+    right_text: str,
+) -> DocumentRelationship | None:
+    """Compare files without trusting their current directory labels.
+
+    Structured topic signatures are allowed to connect a pair. Generic lexical
+    similarity is returned for graph construction, but callers should require a
+    component of at least three files before moving anything on that evidence.
+    """
+    left = f"{Path(left_name).stem} {left_text}".casefold()
+    right = f"{Path(right_name).stem} {right_text}".casefold()
+    for topic, groups, minimum in RELATIONSHIP_SIGNATURES:
+        left_groups = {index for index, group in enumerate(groups) if any(term.casefold() in left for term in group)}
+        right_groups = {index for index, group in enumerate(groups) if any(term.casefold() in right for term in group)}
+        shared_groups = left_groups & right_groups
+        if len(left_groups) >= minimum and len(right_groups) >= minimum and len(shared_groups) >= minimum:
+            evidence = [next((term for term in groups[index] if term.casefold() in left and term.casefold() in right), groups[index][0]) for index in sorted(shared_groups)]
+            return DocumentRelationship(min(.97, .76 + len(shared_groups) * .04), evidence[:8], topic, ["structured topic signature", "cross-folder content relation"])
+
+    left_counts, right_counts = Counter(tokens(left)), Counter(tokens(right))
+    shared = set(left_counts) & set(right_counts)
+    if len(shared) < 4: return None
+    containment = len(shared) / max(1, min(len(left_counts), len(right_counts)))
+    jaccard = len(shared) / max(1, len(set(left_counts) | set(right_counts)))
+    cosine = _cosine(_vector(left_counts), _vector(right_counts))
+    score = cosine * .50 + containment * .34 + jaccard * .16
+    if score < .34: return None
+    ranked = sorted(shared, key=lambda term: left_counts[term] + right_counts[term], reverse=True)
+    return DocumentRelationship(min(.90, score), ranked[:8], None, ["content terms", "file-level cosine similarity"])
 
 
 def build_profile(folder: Path, limit: int = 18) -> FolderProfile | None:
