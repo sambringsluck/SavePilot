@@ -47,13 +47,13 @@ enum AdvancedExtractors {
         guard let document = PDFDocument(url: url) else { return nil }
         var parts: [String] = []
         var scannedPages = 0
-        let limit = min(document.pageCount, 15)
+        let pageIndices = representativePageIndices(pageCount: document.pageCount, maximum: 18)
 
-        for index in 0..<limit {
+        for index in pageIndices {
             guard let page = document.page(at: index) else { continue }
             if let text = page.string?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty {
                 parts.append(text)
-            } else if scannedPages < 5 {
+            } else if scannedPages < 6 {
                 let thumbnail = page.thumbnail(of: NSSize(width: 1600, height: 2200), for: .mediaBox)
                 if let cgImage = thumbnail.cgImage(forProposedRect: nil, context: nil, hints: nil),
                    let result = await Task.detached(priority: .userInitiated, operation: {
@@ -67,8 +67,25 @@ enum AdvancedExtractors {
         }
         guard !parts.isEmpty else { return nil }
         var signals = ["PDF", "\(document.pageCount)页"]
+        if document.pageCount > pageIndices.count { signals.append("代表页分层抽样:\(pageIndices.count)页") }
         if scannedPages > 0 { signals.append("扫描件OCR:\(scannedPages)页") }
         return (parts.joined(separator: "\n"), signals)
+    }
+
+    private static func representativePageIndices(pageCount: Int, maximum: Int) -> [Int] {
+        guard pageCount > 0 else { return [] }
+        guard pageCount > maximum else { return Array(0..<pageCount) }
+        var indices = Set(0..<min(6, pageCount))
+        let anchors = [0.25, 0.5, 0.75, 0.9, 1.0]
+        for anchor in anchors {
+            indices.insert(min(pageCount - 1, Int(Double(pageCount - 1) * anchor)))
+        }
+        var slot = 1
+        while indices.count < maximum {
+            indices.insert(Int(Double(slot) / Double(maximum + 1) * Double(pageCount - 1)))
+            slot += 1
+        }
+        return Array(indices).sorted()
     }
 
     static func extractOfficeText(at url: URL) -> String? {

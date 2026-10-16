@@ -61,14 +61,33 @@ final class LearningStore {
     private var novelClusters: [NovelCluster]
     private var trainingEvents: [TrainingEvent]
     private let defaults: UserDefaults
-    private let key = "learningRules.v1"
+    private let key = "learningRules.v2"
+    private let legacyKey = "learningRules.v1"
     private let clusterKey = "novelThemeClusters.v3"
     private let eventKey = "personalTrainingEvents.v1"
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        let loadedEvents: [TrainingEvent]
+        if let data = defaults.data(forKey: eventKey),
+           let decoded = try? JSONDecoder().decode([TrainingEvent].self, from: data) {
+            loadedEvents = decoded
+        } else {
+            loadedEvents = []
+        }
+        trainingEvents = loadedEvents
+
         if let data = defaults.data(forKey: key),
            let decoded = try? JSONDecoder().decode([Rule].self, from: data) {
+            rules = decoded
+        } else if !loadedEvents.isEmpty {
+            // v1 merged every approved file of the same extension and target
+            // into one ever-growing bag of terms. Rebuild from the immutable
+            // training log into multiple topic clusters instead.
+            rules = Self.rebuildRules(from: loadedEvents)
+            defaults.set(try? JSONEncoder().encode(rules), forKey: key)
+        } else if let data = defaults.data(forKey: legacyKey),
+                  let decoded = try? JSONDecoder().decode([Rule].self, from: data) {
             rules = decoded
         } else {
             rules = []
@@ -78,12 +97,6 @@ final class LearningStore {
             novelClusters = decoded
         } else {
             novelClusters = []
-        }
-        if let data = defaults.data(forKey: eventKey),
-           let decoded = try? JSONDecoder().decode([TrainingEvent].self, from: data) {
-            trainingEvents = decoded
-        } else {
-            trainingEvents = []
         }
     }
 
@@ -97,10 +110,13 @@ final class LearningStore {
         let terms = queryTerms(source: source, content: content)
         let ext = source.pathExtension.lowercased()
         let candidates = rules.compactMap { rule -> (Rule, Double)? in
-            guard rule.approvals > 0 else { return nil }
+            guard rule.approvals > rule.rejections else { return nil }
             let destination = URL(fileURLWithPath: rule.destinationPath, isDirectory: true).standardizedFileURL
             guard FileManager.default.fileExists(atPath: destination.path),
-                  roots.contains(where: { destination.path.hasPrefix($0.standardizedFileURL.path) })
+                  roots.contains(where: { root in
+                      let rootPath = root.standardizedFileURL.path
+                      return destination.path == rootPath || destination.path.hasPrefix(rootPath + "/")
+                  })
             else { return nil }
             let memoryTerms = Set(rule.terms)
             let shared = terms.intersection(memoryTerms)
@@ -110,7 +126,11 @@ final class LearningStore {
             let lexical = coverage * 0.72 + specificity * 0.28
             let extensionBonus = !ext.isEmpty && ext == rule.fileExtension ? 0.055 : 0
             let approvalBonus = min(0.16, log1p(Double(rule.approvals)) * 0.055)
-            let rejectionPenalty = min(0.72, Double(rule.rejections) * 0.22)
+            let rejectionPenalty = negativePenalty(
+                for: terms,
+                destinationPath: rule.destinationPath,
+                fileExtension: ext
+            )
             return (rule, lexical + extensionBonus + approvalBonus - rejectionPenalty)
         }.sorted { $0.1 > $1.1 }
         guard let best = candidates.first, best.1 >= 0.24 else { return nil }
@@ -126,49 +146,27 @@ final class LearningStore {
     }
 
     func record(source: URL, summary: String, destination: URL) {
-        let terms = Array(tokenSet("\(source.deletingPathExtension().lastPathComponent) \(summary)").prefix(40))
-        let ext = source.pathExtension.lowercased()
-        if let index = rules.firstIndex(where: {
-            $0.fileExtension == ext && $0.destinationPath == destination.standardizedFileURL.path
-        }) {
-            rules[index].terms = Array(Set(rules[index].terms).union(terms).prefix(80))
-            rules[index].approvals += 1
-            rules[index].rejections = max(0, rules[index].rejections - 1)
-            rules[index].updatedAt = Date()
-        } else {
-            rules.append(Rule(
-                fileExtension: ext,
-                terms: terms,
-                destinationPath: destination.standardizedFileURL.path,
-                approvals: 1,
-                rejections: 0,
-                updatedAt: Date()
-            ))
-        }
-        rules = Array(rules.sorted { $0.updatedAt > $1.updatedAt }.prefix(500))
-        defaults.set(try? JSONEncoder().encode(rules), forKey: key)
+        let terms = tokenSet("\(source.deletingPathExtension().lastPathComponent) \(summary)")
+        updateRule(
+            fileExtension: source.pathExtension.lowercased(),
+            terms: terms,
+            destinationPath: destination.standardizedFileURL.path,
+            approved: true,
+            at: Date()
+        )
+        persistRules()
         appendTrainingEvent(source: source, summary: summary, destination: destination, outcome: "approved")
     }
 
     func recordRejection(source: URL, summary: String, destination: URL) {
-        let terms = Array(tokenSet("\(source.deletingPathExtension().lastPathComponent) \(summary)").prefix(80))
-        let ext = source.pathExtension.lowercased()
-        if let index = rules.firstIndex(where: {
-            $0.fileExtension == ext && $0.destinationPath == destination.standardizedFileURL.path
-        }) {
-            rules[index].terms = Array(Set(rules[index].terms).union(terms).prefix(120))
-            rules[index].rejections += 1
-            rules[index].updatedAt = Date()
-        } else {
-            rules.append(Rule(
-                fileExtension: ext,
-                terms: terms,
-                destinationPath: destination.standardizedFileURL.path,
-                approvals: 0,
-                rejections: 1,
-                updatedAt: Date()
-            ))
-        }
+        let terms = tokenSet("\(source.deletingPathExtension().lastPathComponent) \(summary)")
+        updateRule(
+            fileExtension: source.pathExtension.lowercased(),
+            terms: terms,
+            destinationPath: destination.standardizedFileURL.path,
+            approved: false,
+            at: Date()
+        )
         persistRules()
         appendTrainingEvent(source: source, summary: summary, destination: destination, outcome: "rejected")
     }
@@ -210,6 +208,7 @@ final class LearningStore {
         novelClusters.removeAll()
         trainingEvents.removeAll()
         defaults.removeObject(forKey: key)
+        defaults.removeObject(forKey: legacyKey)
         defaults.removeObject(forKey: clusterKey)
         defaults.removeObject(forKey: eventKey)
     }
@@ -223,6 +222,92 @@ final class LearningStore {
         let known = Set(cluster.terms)
         let union = max(1, terms.union(known).count)
         return 0.55 + 0.45 * Double(terms.intersection(known).count) / Double(union)
+    }
+
+    private func updateRule(
+        fileExtension: String,
+        terms: Set<String>,
+        destinationPath: String,
+        approved: Bool,
+        at date: Date
+    ) {
+        let eligible = rules.indices.filter {
+            rules[$0].fileExtension == fileExtension && rules[$0].destinationPath == destinationPath
+        }
+        let ranked = eligible.map { index in
+            (index, Self.jaccard(terms, Set(rules[index].terms)))
+        }.sorted { $0.1 > $1.1 }
+        let threshold = approved ? 0.18 : 0.12
+        if let best = ranked.first, best.1 >= threshold {
+            let index = best.0
+            rules[index].terms = Array(Set(rules[index].terms).union(terms).prefix(100))
+            if approved {
+                rules[index].approvals += 1
+                rules[index].rejections = max(0, rules[index].rejections - 1)
+            } else {
+                rules[index].rejections += 1
+            }
+            rules[index].updatedAt = date
+        } else {
+            rules.append(Rule(
+                fileExtension: fileExtension,
+                terms: Array(terms.prefix(100)),
+                destinationPath: destinationPath,
+                approvals: approved ? 1 : 0,
+                rejections: approved ? 0 : 1,
+                updatedAt: date
+            ))
+        }
+    }
+
+    private func negativePenalty(for terms: Set<String>, destinationPath: String, fileExtension: String) -> Double {
+        rules.filter {
+            $0.destinationPath == destinationPath
+                && $0.fileExtension == fileExtension
+                && $0.rejections > 0
+        }.reduce(0.0) { penalty, rule in
+            let similarity = Self.jaccard(terms, Set(rule.terms))
+            guard similarity >= 0.12 else { return penalty }
+            let strength = min(0.62, Double(rule.rejections) * 0.22)
+            return max(penalty, similarity * strength)
+        }
+    }
+
+    private static func rebuildRules(from events: [TrainingEvent]) -> [Rule] {
+        var result: [Rule] = []
+        for event in events.sorted(by: { $0.createdAt < $1.createdAt }) {
+            let terms = Set(event.terms)
+            let eligible = result.indices.filter {
+                result[$0].fileExtension == event.fileExtension
+                    && result[$0].destinationPath == event.destinationPath
+            }
+            let ranked = eligible.map { index in
+                (index, jaccard(terms, Set(result[index].terms)))
+            }.sorted { $0.1 > $1.1 }
+            let approved = event.outcome == "approved"
+            let threshold = approved ? 0.18 : 0.12
+            if let best = ranked.first, best.1 >= threshold {
+                let index = best.0
+                result[index].terms = Array(Set(result[index].terms).union(terms).prefix(100))
+                if approved { result[index].approvals += 1 } else { result[index].rejections += 1 }
+                result[index].updatedAt = event.createdAt
+            } else {
+                result.append(Rule(
+                    fileExtension: event.fileExtension,
+                    terms: Array(terms.prefix(100)),
+                    destinationPath: event.destinationPath,
+                    approvals: approved ? 1 : 0,
+                    rejections: approved ? 0 : 1,
+                    updatedAt: event.createdAt
+                ))
+            }
+        }
+        return Array(result.sorted { $0.updatedAt > $1.updatedAt }.prefix(500))
+    }
+
+    private static func jaccard(_ lhs: Set<String>, _ rhs: Set<String>) -> Double {
+        guard !lhs.isEmpty, !rhs.isEmpty else { return 0 }
+        return Double(lhs.intersection(rhs).count) / Double(lhs.union(rhs).count)
     }
 
     private func persistRules() {

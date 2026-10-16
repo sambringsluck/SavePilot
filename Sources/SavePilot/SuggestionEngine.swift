@@ -74,6 +74,34 @@ struct SuggestionEngine {
         bestCategory(for: source, evidence: "\(source.lastPathComponent) \(content.text)".lowercased()).folder
     }
 
+    func strongTitleCategoryName(for source: URL) -> String? {
+        let title = source.deletingPathExtension().lastPathComponent.lowercased()
+        if isHomeworkTitle(title) { return "学习" }
+        let contentCategories = categories.dropLast().filter {
+            !["截图", "图片", "代码", "安装包", "压缩包", "音视频"].contains($0.folder)
+        }
+        let matches = contentCategories.compactMap { category -> (Category, Int)? in
+            let count = directTitleSignals(for: category).filter { containsSignal($0, in: title) }.count
+            return count > 0 ? (category, count) : nil
+        }.sorted { $0.1 > $1.1 }
+        guard let best = matches.first,
+              matches.dropFirst().first?.1 != best.1
+        else { return nil }
+        return best.0.folder
+    }
+
+    func destination(_ destination: URL, matchesCategoryNamed name: String) -> Bool {
+        guard let category = categories.first(where: { $0.folder == name }) else { return false }
+        return destination.pathComponents.suffix(2).contains { component in
+            let normalized = component.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+            if category.folder.contains(where: { !$0.isASCII }),
+               normalized.contains(category.folder.lowercased()) {
+                return true
+            }
+            return category.aliases.contains { normalized == $0.lowercased() }
+        }
+    }
+
     /// Returns a bounded, reusable category rather than a one-off folder named
     /// after the file. A title keyword is sufficient; otherwise the body needs
     /// at least two independent category signals. Format categories are stable
@@ -88,7 +116,7 @@ struct SuggestionEngine {
         let formatCategories: Set<String> = ["截图", "图片", "代码", "安装包", "压缩包", "音视频"]
         if formatCategories.contains(category.folder) { return category.folder }
 
-        let titleSignals = category.aliases + category.keywords
+        let titleSignals = directTitleSignals(for: category)
         if titleSignals.contains(where: { containsSignal($0, in: title) }) {
             return category.folder
         }
@@ -133,24 +161,16 @@ struct SuggestionEngine {
             !["截图", "图片", "代码", "安装包", "压缩包", "音视频"].contains($0.folder)
         }
         let title = source.deletingPathExtension().lastPathComponent.lowercased()
-        if isHomeworkTitle(title),
-           let study = categories.first(where: { $0.folder == "学习" }) {
-            return study
-        }
-        let titleMatches = contentCategories.compactMap { category -> (Category, Int)? in
-            let count = (category.aliases + category.keywords).filter { containsSignal($0, in: title) }.count
-            return count > 0 ? (category, count) : nil
-        }.sorted { $0.1 > $1.1 }
-        if let bestTitle = titleMatches.first,
-           titleMatches.dropFirst().first?.1 != bestTitle.1 {
-            return bestTitle.0
+        if let strongTitle = strongTitleCategoryName(for: source),
+           let category = categories.first(where: { $0.folder == strongTitle }) {
+            return category
         }
 
         let keywordRanked = contentCategories.map { category in
             (category, Double(score(category: category, evidence: evidence)))
         }.sorted { $0.1 > $1.1 }
         if let best = keywordRanked.first {
-            let titleHasDirectSignal = (best.0.aliases + best.0.keywords).contains {
+            let titleHasDirectSignal = directTitleSignals(for: best.0).contains {
                 containsSignal($0, in: title)
             }
             if best.1 >= 4 || (best.1 >= 2 && titleHasDirectSignal) { return best.0 }
@@ -180,12 +200,23 @@ struct SuggestionEngine {
         let lexicalRanked = folders.map { folder -> (URL, Int) in
             let folderName = folder.lastPathComponent.lowercased()
             var value = 0
-            if folderName.contains(category.folder.lowercased()) { value += 8 }
-            for alias in category.aliases where folderName == alias.lowercased() { value += 6 }
             let folderTokens = tokens(folder.lastPathComponent)
             let evidenceTokens = tokens(evidence)
             let folderOverlap = folderTokens.intersection(evidenceTokens).count
-            value += folderOverlap * 6
+            let genericTechnical = isGenericTechnicalFolder(folder)
+            if !genericTechnical {
+                if folderName.contains(category.folder.lowercased()) { value += 8 }
+                for alias in category.aliases where folderName == alias.lowercased() { value += 6 }
+                value += folderOverlap * 6
+            } else {
+                // A folder called “images”, “data” or “output” belongs to its
+                // parent project; it is never a global destination merely
+                // because the incoming file is an image or data file.
+                let contextTerms = tokens(folder.pathComponents.suffix(2).joined(separator: " "))
+                    .subtracting(folderTokens)
+                let contextOverlap = contextTerms.intersection(evidenceTokens).count
+                value += contextOverlap * 8
+            }
             let residentTokens = residentFileTokens(in: folder)
             let residentOverlap = residentTokens.intersection(evidenceTokens).count
             // Existing filenames may strengthen an already explainable folder
@@ -197,9 +228,7 @@ struct SuggestionEngine {
                !extensions.values.contains(sourceExtension) {
                 value -= 5
             }
-            if isGenericTechnicalFolder(folder), !folderNameMatches(category: category, folder: folder) {
-                value -= 12
-            }
+            if genericTechnical, value == 0 { value -= 12 }
             return (folder, value)
         }.sorted { $0.1 > $1.1 }
         if let best = lexicalRanked.first, best.1 >= 4 { return best.0 }
@@ -283,6 +312,13 @@ struct SuggestionEngine {
             let suffix = token.dropFirst(2)
             return !suffix.isEmpty && suffix.allSatisfy { $0.isNumber }
         }
+    }
+
+    private func directTitleSignals(for category: Category) -> [String] {
+        // A title is strong evidence only when it contains a category alias or
+        // a high-specificity anchor. Broad words such as “statement”,
+        // “report” and “order” need corroboration from the document body.
+        Array(Set(category.aliases + (strongAnchors[category.folder] ?? [])))
     }
 
     private var strongAnchors: [String: [String]] {

@@ -20,7 +20,11 @@ struct SavePilotSelfTest {
         try testEvidenceFusionAndAbstention()
         try testMemoryRejectsUnrelatedSameFormat()
         try testKeywordBoundaryMatching()
-        print("SavePilot self-test: 13/13 passed")
+        try testAmbiguousTitleNeedsBodyEvidence()
+        try testGenericTechnicalFolderNeedsProjectContext()
+        try testMemoryKeepsSeparateTopicsAndHonorsRejection()
+        try testNumberedSeriesConsensus()
+        print("SavePilot self-test: 17/17 passed")
     }
 
     private static func testExistingFolderSuggestion() throws {
@@ -195,6 +199,8 @@ struct SavePilotSelfTest {
         let browserProfilePreference = home.appendingPathComponent("Documents/tool-profile/Default/Preferences").path
         let codexWorkspace = home.appendingPathComponent("Documents/Codex/2026-10-14/task/work/output.dat").path
         let photosLibraryInternal = home.appendingPathComponent("Pictures/Photos Library.photoslibrary/resources/internal.plist").path
+        let musicLibraryInternal = home.appendingPathComponent("Music/Music/Music Library.musiclibrary/Library.musicdb").path
+        let tvLibraryInternal = home.appendingPathComponent("Movies/Videos/Videos Library.tvlibrary/Library.tvdb").path
         guard FolderMonitor.shouldIgnore(path: libraryItem),
               FolderMonitor.shouldIgnore(path: buildArtifact),
               FolderMonitor.shouldIgnore(path: browserJournal),
@@ -202,6 +208,8 @@ struct SavePilotSelfTest {
               FolderMonitor.shouldIgnore(path: browserProfilePreference),
               FolderMonitor.shouldIgnore(path: codexWorkspace),
               FolderMonitor.shouldIgnore(path: photosLibraryInternal),
+              FolderMonitor.shouldIgnore(path: musicLibraryInternal),
+              FolderMonitor.shouldIgnore(path: tvLibraryInternal),
               !FolderMonitor.shouldIgnore(path: normalDocument)
         else { throw SelfTestError.failed("system data exclusion") }
     }
@@ -314,6 +322,108 @@ struct SavePilotSelfTest {
         guard engine.stableNewFolderName(
             for: root.appendingPathComponent("1014 面试问题.docx"), content: content
         ) == "工作" else { throw SelfTestError.failed("interview title pattern") }
+    }
+
+    private static func testAmbiguousTitleNeedsBodyEvidence() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let content = ExtractedContent(
+            text: "I affirm that this submission is my original academic work and follows the honor code.",
+            kind: "PDF",
+            summary: "academic integrity declaration"
+        )
+        let engine = SuggestionEngine()
+        guard engine.stableNewFolderName(
+            for: root.appendingPathComponent("integrity_statement.pdf"), content: content
+        ) != "财务" else { throw SelfTestError.failed("ambiguous statement title") }
+    }
+
+    private static func testGenericTechnicalFolderNeedsProjectContext() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let project = root.appendingPathComponent("unrelated-project", isDirectory: true)
+        let images = project.appendingPathComponent("images", isDirectory: true)
+        try FileManager.default.createDirectory(at: images, withIntermediateDirectories: true)
+        let source = root.appendingPathComponent("family-photo-01.png")
+        let content = ExtractedContent(text: "people outdoors", kind: "图片 / Vision", summary: "photo")
+        let suggestion = SuggestionEngine().suggest(for: source, content: content, roots: [root])
+        guard suggestion.finalDestinationFolder.standardizedFileURL != images.standardizedFileURL else {
+            throw SelfTestError.failed("generic images folder hijack")
+        }
+    }
+
+    private static func testMemoryKeepsSeparateTopicsAndHonorsRejection() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let destination = root.appendingPathComponent("参考资料", isDirectory: true)
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        let suiteName = "SavePilotMemoryClusterTest.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else { throw SelfTestError.failed("cluster defaults") }
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let memory = LearningStore(defaults: defaults)
+        memory.record(
+            source: root.appendingPathComponent("portfolio-risk.pdf"),
+            summary: "portfolio investment stocks bonds risk return",
+            destination: destination
+        )
+        memory.record(
+            source: root.appendingPathComponent("museum-itinerary.pdf"),
+            summary: "travel flight hotel museum itinerary visa",
+            destination: destination
+        )
+        memory.recordRejection(
+            source: root.appendingPathComponent("portfolio-risk-update.pdf"),
+            summary: "portfolio investment stocks bonds risk return",
+            destination: destination
+        )
+        let finance = ExtractedContent(
+            text: "portfolio investment stocks bonds risk return",
+            kind: "PDF",
+            summary: "portfolio investment risk return"
+        )
+        let travel = ExtractedContent(
+            text: "travel flight hotel museum itinerary visa",
+            kind: "PDF",
+            summary: "travel flight hotel itinerary"
+        )
+        guard memory.recommendation(
+            for: root.appendingPathComponent("portfolio-risk-new.pdf"), content: finance, roots: [root]
+        ) == nil else { throw SelfTestError.failed("negative memory abstention") }
+        guard memory.recommendation(
+            for: root.appendingPathComponent("museum-trip-2.pdf"), content: travel, roots: [root]
+        )?.destination.standardizedFileURL == destination.standardizedFileURL else {
+            throw SelfTestError.failed("separate memory topics")
+        }
+    }
+
+    private static func testNumberedSeriesConsensus() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let project = root.appendingPathComponent("YEC", isDirectory: true)
+        let platform = project.appendingPathComponent("平台文档", isDirectory: true)
+        let website = project.appendingPathComponent("website", isDirectory: true)
+        let other = root.appendingPathComponent("Other", isDirectory: true)
+        for folder in [platform, website, other] {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        }
+        let destinations = [platform, website, platform, other, root.appendingPathComponent("images")]
+        let suggestions = destinations.enumerated().map { index, destination in
+            FileSuggestion(
+                id: UUID(),
+                source: root.appendingPathComponent("经济宣讲_\(index + 1).png"),
+                destinationFolder: destination,
+                proposedFolderName: "",
+                reason: index < 4 ? "本地多证据 RAG：测试" : "普通回退",
+                summary: "经济社团宣讲",
+                confidence: 0.75,
+                createsFolder: false,
+                detectedAt: Date()
+            )
+        }
+        let resolved = SeriesConsensus.consolidate(suggestions, roots: [root])
+        guard resolved.allSatisfy({ $0.finalDestinationFolder.standardizedFileURL == project.standardizedFileURL }) else {
+            throw SelfTestError.failed("numbered series consensus")
+        }
     }
 
     private static func temporaryDirectory() throws -> URL {

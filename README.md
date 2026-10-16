@@ -17,15 +17,16 @@ SavePilot 是一个原生 macOS 菜单栏应用：它识别正在发生的“保
 ## 智能分析能力
 
 - 文本与源码：按内容、文件名、UTType、语言和实体分析；Markdown 会剥离语法、YAML 头部及对话导出中的思考/工具调用记录，避免机器日志淹没正文。
-- PDF：提取原生文字；扫描页使用 Apple Vision OCR。
+- PDF：优先读取开头、正文中段和结尾的代表页，而不是只看前几页；扫描页使用 Apple Vision OCR。
 - 图片：OCR、图像分类、条码/二维码、人脸数量及基础 EXIF 信息。
 - DOCX、PPTX、XLSX：直接解析 OpenXML 内容；Pages、其他文档继续使用 Spotlight 与 Quick Look 兜底。
 - 音视频：读取时长和 AVFoundation 元数据。
 - ZIP/TAR/GZ：读取归档目录清单，不解压到磁盘。
 - 其他任意格式：至少使用 UTType、文件魔数、文件名、系统元数据和 Quick Look 预览进行判断。
 - 分类：内置双语关键词与 Natural Language 语义向量；自动模式在兼容系统上可使用 Apple Foundation Models；也可连接本机 Ollama。
-- 个性化：从已有文件夹按“近期 + 历史跨度 + 格式多样性”抽样读取真实文件内容（不只看文件名）；主题不一致时自动扩展到最多 18 个文件，并以多数文件的主主题簇抑制离群项。每个文件同时形成连接目录、实体、关键词与格式的本地超边。最终通过正文主题、共享实体/关键词、文件名/目录名和格式习惯四路排序融合，并同时检查绝对证据、第一第二名差距和文件夹一致度；证据不足或候选接近时主动保留原位。
-- 准确性保护：个人记忆必须命中至少两个主题词并领先其他记忆，同格式不再构成强证据；已有个人记忆或本地 RAG 结论不会被只看到精简提示的大模型覆盖。大模型仅在本地证据不足时参与，并须通过置信度与目录语义校验。
+- 个性化：从已有文件夹按“近期 + 历史跨度 + 格式多样性”抽样读取真实文件内容（不只看文件名）；主题不一致时自动扩展到最多 18 个文件，并以多数文件的主主题簇抑制离群项。每个文件同时形成连接目录、实体、关键词与格式的本地超边。最终通过正文主题、共享实体/关键词、文件名/目录名和格式习惯四路排序融合，并同时检查绝对证据、第一第二名差距和文件夹一致度；证据不足或候选接近时主动保留原位。索引使用对数词频抑制模板、日志及 JSON 重复字段的干扰，并同时覆盖常用大目录和近期建立的小目录。
+- 准确性保护：个人记忆按“目标目录 + 文件格式 + 内容主题”分别聚类，不会把同一目录中互不相关的主题合并成一条规则；明确拒绝会抑制相似建议。同格式不再构成强证据；`images`、`data`、`output` 等项目内部通用目录必须有项目上下文才能被选中。已有个人记忆或本地 RAG 结论不会被只看到精简提示的大模型覆盖。大模型仅在本地证据不足时参与，并须通过置信度与目录语义校验。
+- 批次一致性：对名称相同、末尾编号不同的截图、扫描页和导出页，只有至少 4 个文件中出现 3 个以上高质量证据且 70% 指向同一项目时，才会统一项目路径，避免逐页 OCR 波动造成分散归类。
 
 “支持所有格式”指任何普通文件都能被发现、获得元数据级建议并进入人工确认流程。加密文件、损坏文件或没有 Quick Look/Spotlight 支持的私有格式，无法保证提取其内部语义，但仍会基于格式、文件名及目录上下文推荐。
 
@@ -34,7 +35,7 @@ SavePilot 是一个原生 macOS 菜单栏应用：它识别正在发生的“保
 系统要求：macOS 14 或更高版本。
 
 1. 打开 `dist/SavePilot.app`，在菜单栏找到 SavePilot 图标。
-2. 在“设置”中选择监听目录与归档根目录。默认监听下载和桌面；也可选择“监听所有个人文件”。该模式永久排除 `~/Library`、隐藏目录、应用包、废纸篓和开发构建缓存。
+2. 在“设置”中选择监听目录与归档根目录。默认监听下载和桌面；也可选择“监听所有个人文件”。该模式永久排除 `~/Library`、隐藏目录、应用包、Photos/Music/TV 等受管理资料库内部文件、废纸篓和开发构建缓存。
 3. 若要识别其他应用的系统保存面板，点击“辅助功能 → 授权”。
 4. “完全磁盘访问”是可选项，仅在你主动加入受保护目录或 macOS 拒绝已选目录时需要。
 5. 可选择登录时自动启动。先用一个无关紧要的测试文件验证你的目录设置。
@@ -62,9 +63,9 @@ SavePilot 使用两层方案：辅助功能只读识别保存窗口并提供落�
 需要 Swift 6 / Xcode Command Line Tools：
 
 ```bash
-chmod +x scripts/build-app.sh scripts/run-self-test.sh
-./scripts/run-self-test.sh
-./scripts/build-app.sh
+chmod +x Scripts/build-app.sh Scripts/run-self-test.sh
+./Scripts/run-self-test.sh
+./Scripts/build-app.sh
 open dist/SavePilot.app
 ```
 
@@ -85,6 +86,7 @@ open dist/SavePilot.app
 - `SystemIntegration.swift`：保存面板只读识别与权限入口。
 - `SuggestionEngine.swift` / `AppleFoundationRecommender.swift` / `OllamaRecommender.swift`：多级推荐引擎。
 - `DeepSeekRecommender.swift` / `KeychainStore.swift`：可选云端分类与钥匙串密钥管理。
-- `LearningStore.swift`：本机 RAG 式个人记忆、正负反馈学习与新主题聚类门槛。
+- `LearningStore.swift`：本机 RAG 式个人记忆、按主题分簇的正负反馈学习与新主题聚类门槛。
 - `FolderKnowledgeIndex.swift` / `EvidenceRanker.swift`：自适应抽样真实内容，构建可增量更新的本地混合 RAG、知识图谱/超图主题索引，并执行多路排序融合与低置信度拒绝。
+- `SeriesConsensus.swift`：对编号批次文件执行保守的项目级一致性校准。
 - `FileMover.swift`：确认移动、冲突保护和撤销。

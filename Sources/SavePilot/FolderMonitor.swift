@@ -104,6 +104,19 @@ final class FolderMonitor {
             "cache", "caches", "cache_data", "code cache", "gpucache",
             "service worker", "shadercache", "dawncache", "blob_storage"
         ]
+        // These are document/library bundles managed by their owning apps. A
+        // whole-home FSEvents stream reports changes to their internal SQLite
+        // and preference files, but those implementation details are not files
+        // the user intends to organize.
+        let managedBundleExtensions: Set<String> = [
+            "app", "bundle", "framework", "plugin", "appex",
+            "musiclibrary", "tvlibrary", "photoslibrary", "photolibrary",
+            "imovielibrary", "fcpbundle", "logicx", "band", "garageband"
+        ]
+        let isInsideManagedBundle = components.dropFirst().dropLast().contains { component in
+            guard let dot = component.lastIndex(of: ".") else { return false }
+            return managedBundleExtensions.contains(String(component[component.index(after: dot)...]).lowercased())
+        }
         let personalLibraryPrefix = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library", isDirectory: true).path + "/"
         let codexWorkspacePrefix = FileManager.default.homeDirectoryForCurrentUser
@@ -129,9 +142,7 @@ final class FolderMonitor {
             || path.contains("/.git/")
             || path.contains("/node_modules/")
             || path.contains("/DerivedData/")
-            || path.contains(".app/Contents/")
-            || path.lowercased().contains(".photoslibrary/")
-            || path.lowercased().contains(".photolibrary/")
+            || isInsideManagedBundle
             || !lowercasedComponents.isDisjoint(with: cacheDirectoryNames)
             || components.dropFirst().contains(where: { $0.hasPrefix(".") })
     }

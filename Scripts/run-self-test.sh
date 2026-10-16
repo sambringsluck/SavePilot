@@ -9,6 +9,7 @@ swiftc \
   Sources/SavePilot/Models.swift \
   Sources/SavePilot/MarkdownContentNormalizer.swift \
   Sources/SavePilot/EvidenceRanker.swift \
+  Sources/SavePilot/SeriesConsensus.swift \
   Sources/SavePilot/SuggestionEngine.swift \
   Sources/SavePilot/LearningStore.swift \
   Sources/SavePilot/FolderAuditEngine.swift \

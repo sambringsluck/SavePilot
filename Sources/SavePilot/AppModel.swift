@@ -377,6 +377,7 @@ final class AppModel: ObservableObject {
         let personalLibraryPrefix = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library", isDirectory: true).path + "/"
         guard !url.standardizedFileURL.path.hasPrefix(personalLibraryPrefix),
+              !FolderMonitor.shouldIgnore(path: url.path),
               FileManager.default.fileExists(atPath: url.path),
               !ignoredPaths.contains(url.path),
               !suggestions.contains(where: { $0.source.path == url.path })
@@ -398,9 +399,17 @@ final class AppModel: ObservableObject {
         }.value
         let learned = learningStore.recommendation(for: url, content: content, roots: roots)
         let profiles = folderKnowledgeProfiles
-        let knowledge = learned == nil ? await Task.detached(priority: .userInitiated) {
+        let knowledgeCandidate = learned == nil ? await Task.detached(priority: .userInitiated) {
             FolderKnowledgeIndex.recommend(source: url, content: content, profiles: profiles)
         }.value : nil
+        let strongTitleCategory = suggestionEngine.strongTitleCategoryName(for: url)
+        let knowledge = knowledgeCandidate.flatMap { candidate in
+            guard let strongTitleCategory else { return candidate }
+            return suggestionEngine.destination(
+                candidate.destination,
+                matchesCategoryNamed: strongTitleCategory
+            ) ? candidate : nil
+        }
         let novelThemeReady = learned == nil
             ? learningStore.observeNovelTheme(source: url, content: content, topic: topic)
             : false
@@ -459,10 +468,12 @@ final class AppModel: ObservableObject {
         )
         learningSummary = learningStore.summary
         suggestions.append(suggestion)
+        suggestions = SeriesConsensus.consolidate(suggestions, roots: roots)
+        let emittedSuggestion = suggestions.first(where: { $0.id == suggestion.id }) ?? suggestion
         state = .ready
         SavePanelObserver.writeRuntimeDiagnostics(RuntimeDiagnostics(
             lastAnalyzedFile: url.path,
-            suggestedDestination: suggestion.finalDestinationFolder.path,
+            suggestedDestination: emittedSuggestion.finalDestinationFolder.path,
             pendingSuggestions: suggestions.count,
             processedAt: Date(),
             recentSuggestions: suggestions.suffix(30).map {

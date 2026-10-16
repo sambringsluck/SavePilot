@@ -42,7 +42,7 @@ enum EvidenceRanker {
                 channels.append("共享实体/关键词")
             }
             if let rank = pathRanks[candidate.identifier] {
-                fusion += reciprocal(rank, weight: 0.72)
+                fusion += reciprocal(rank, weight: 0.90)
                 channels.append("文件名/目录名")
             }
             if let rank = extensionRanks[candidate.identifier] {
@@ -52,10 +52,10 @@ enum EvidenceRanker {
 
             let semanticQuality = min(1, candidate.semantic / 0.26)
             let graphQuality = min(1, candidate.hypergraph / 0.16)
-            let pathQuality = min(1, candidate.pathMatch / 0.18)
+            let pathQuality = min(1, candidate.pathMatch / 0.20)
             let absolute = semanticQuality * 0.64
-                + graphQuality * 0.20
-                + pathQuality * 0.13
+                + graphQuality * 0.18
+                + pathQuality * 0.15
                 + candidate.extensionMatch * 0.03
             let coherenceFactor = 0.72 + min(0.28, max(0, candidate.coherence) * 0.28)
             let normalizedFusion = min(1, fusion / 0.30)

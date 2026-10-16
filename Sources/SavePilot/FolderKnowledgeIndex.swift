@@ -58,7 +58,7 @@ enum FolderKnowledgeIndex {
     }
 
     static func build(roots: [URL]) async -> [FolderKnowledgeProfile] {
-        let folders = candidateFolders(in: roots, perRootLimit: 24)
+        let folders = candidateFolders(in: roots, perRootLimit: 36)
         var profiles: [FolderKnowledgeProfile] = []
         for start in stride(from: 0, to: folders.count, by: 4) {
             let chunk = Array(folders[start..<min(start + 4, folders.count)])
@@ -101,16 +101,22 @@ enum FolderKnowledgeIndex {
             for term in profile.weights.keys { documentFrequency[term, default: 0] += 1 }
         }
         let totalProfiles = Double(usable.count)
-        let queryTotal = Double(max(1, queryCounts.values.reduce(0, +)))
         var query: [String: Double] = [:]
         for (term, count) in queryCounts {
             let idf = log((totalProfiles + 1) / (Double(documentFrequency[term, default: 0]) + 1)) + 1
-            query[term] = Double(count) / queryTotal * idf
+            // Log-scaled term frequency prevents repeated boilerplate in JSON,
+            // transcripts and templates from drowning out rarer topic terms.
+            query[term] = (1 + log(Double(max(1, count)))) * idf
         }
         query = normalized(query)
 
         let sourceExtension = source.pathExtension.lowercased()
         let sourceNameTerms = Set(tokenCounts(source.deletingPathExtension().lastPathComponent).keys)
+        let genericTitleTerms: Set<String> = [
+            "report", "final", "draft", "copy", "new", "untitled", "version",
+            "image", "photo", "scan", "screenshot", "export"
+        ]
+        let specificSourceNameTerms = sourceNameTerms.subtracting(genericTitleTerms)
         let scored = usable.map { profile -> (FolderKnowledgeProfile, Double, Double, Double, Double, [String]) in
             var profileVector: [String: Double] = [:]
             for (term, weight) in profile.weights {
@@ -134,8 +140,8 @@ enum FolderKnowledgeIndex {
             let pathTerms = Set(tokenCounts(
                 URL(fileURLWithPath: profile.path).pathComponents.suffix(2).joined(separator: " ")
             ).keys)
-            let explicitPathOverlap = sourceNameTerms.intersection(pathTerms).count
-            let pathScore = min(0.18, Double(explicitPathOverlap) * 0.09)
+            let explicitPathOverlap = specificSourceNameTerms.intersection(pathTerms).count
+            let pathScore = min(0.24, Double(explicitPathOverlap) * 0.12)
             let extensionScore = (!sourceExtension.isEmpty && profile.extensions.contains(sourceExtension)) ? 1.0 : 0.0
             let evidence = query.keys
                 .filter { profileVector[$0] != nil }
@@ -150,9 +156,39 @@ enum FolderKnowledgeIndex {
                 hypergraph: $0.2,
                 pathMatch: $0.3,
                 extensionMatch: $0.4,
-                coherence: $0.0.coherence,
+                coherence: $0.0.coherence * min(1, Double($0.0.sampledFiles) / 4.0),
                 evidenceTermCount: $0.5.count
             )
+        }
+        // A unique literal title-to-path match (especially an acronym such as
+        // IEO) is more specific than broad topical similarity. Generic title
+        // words are removed above, and we abstain when multiple paths share
+        // the same remaining identifier.
+        let explicitPath = scored
+            .filter { $0.3 >= 0.12 }
+            .sorted {
+                if $0.3 != $1.3 { return $0.3 > $1.3 }
+                return $0.1 > $1.1
+            }
+        if let best = explicitPath.first {
+            let secondPath = explicitPath.dropFirst().first?.3 ?? 0
+            if best.3 - secondPath >= 0.10 {
+                let pathTerms = Set(tokenCounts(
+                    URL(fileURLWithPath: best.0.path).pathComponents.suffix(2).joined(separator: " ")
+                ).keys)
+                let pathEvidence = specificSourceNameTerms.intersection(pathTerms).sorted()
+                let evidence = Array((pathEvidence + best.5).reduce(into: [String]()) { values, term in
+                    if !values.contains(term) { values.append(term) }
+                }.prefix(8))
+                return FolderKnowledgeRecommendation(
+                    destination: URL(fileURLWithPath: best.0.path, isDirectory: true),
+                    score: min(0.95, 0.56 + best.1),
+                    margin: best.3 - secondPath,
+                    evidenceTerms: evidence,
+                    evidenceChannels: ["文件名/专属目录名", "正文主题"],
+                    confidence: min(0.94, 0.72 + best.1 * 0.55)
+                )
+            }
         }
         guard let ranking = EvidenceRanker.rank(evidenceCandidates),
               let best = scored.first(where: { $0.0.path == ranking.identifier })
@@ -210,8 +246,9 @@ enum FolderKnowledgeIndex {
                 counts[term, default: 0] += count
             }
         }
-        let total = Double(max(1, counts.values.reduce(0, +)))
         let top = counts.sorted { $0.value > $1.value }.prefix(360)
+        let sublinear = top.map { ($0.key, 1 + log(Double(max(1, $0.value)))) }
+        let total = max(1, sublinear.reduce(0) { $0 + $1.1 })
         let hyperedges = dominantIndices.map { index -> FolderKnowledgeHyperedge in
             let document = documents[index]
             let members = document.counts
@@ -226,7 +263,7 @@ enum FolderKnowledgeIndex {
         }
         return FolderKnowledgeProfile(
             path: folder.standardizedFileURL.path,
-            weights: Dictionary(uniqueKeysWithValues: top.map { ($0.key, Double($0.value) / total) }),
+            weights: Dictionary(uniqueKeysWithValues: sublinear.map { ($0.0, $0.1 / total) }),
             extensions: Array(extensions).sorted(),
             sampledFiles: documents.count,
             consideredFiles: candidates.count,
@@ -299,12 +336,23 @@ enum FolderKnowledgeIndex {
                     candidates.append((url, files.count, values?.contentModificationDate ?? .distantPast))
                 }
             }
-            // Mix larger established folders with recently active ones.
-            candidates.sort {
+            // Mix established folders with recently active smaller folders.
+            // A single size/recency sort systematically omitted precisely the
+            // new personal categories that need good recommendations most.
+            let established = candidates.sorted {
                 if $0.1 != $1.1 { return $0.1 > $1.1 }
                 return $0.2 > $1.2
             }
-            for candidate in candidates.prefix(perRootLimit) {
+            let recent = candidates.sorted { $0.2 > $1.2 }
+            var mixed: [(URL, Int, Date)] = []
+            var localSeen: Set<String> = []
+            for candidate in established.prefix((perRootLimit + 1) / 2) {
+                if localSeen.insert(candidate.0.path).inserted { mixed.append(candidate) }
+            }
+            for candidate in recent where mixed.count < perRootLimit {
+                if localSeen.insert(candidate.0.path).inserted { mixed.append(candidate) }
+            }
+            for candidate in mixed {
                 let path = candidate.0.standardizedFileURL.path
                 if seen.insert(path).inserted { result.append(candidate.0) }
             }
@@ -384,6 +432,7 @@ enum FolderKnowledgeIndex {
 
     private static func tokenCounts(_ text: String) -> [String: Int] {
         let sample = String(text.prefix(18_000)).lowercased()
+            .replacingOccurrences(of: "[_\\/\\-]+", with: " ", options: .regularExpression)
         let tokenizer = NLTokenizer(unit: .word)
         tokenizer.string = sample
         var result: [String: Int] = [:]
@@ -413,7 +462,7 @@ enum FolderKnowledgeIndex {
 
     private static var storageURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/SavePilot/folder-knowledge-v6.json")
+            .appendingPathComponent("Library/Application Support/SavePilot/folder-knowledge-v8.json")
     }
 
     private static let stopWords: Set<String> = [
@@ -421,6 +470,7 @@ enum FolderKnowledgeIndex {
         "into", "file", "document", "page", "http", "https", "com", "www", "pdf", "docx", "pptx",
         "model", "article", "student", "students", "figure", "table", "chapter", "chapters", "section",
         "sections", "part", "parts", "version", "content", "ii", "iii", "iv", "li",
+        "type", "role", "channel", "message", "messages", "request", "response", "timestamp", "metadata",
         "of", "to", "in", "is", "it", "as", "an", "be", "by", "on", "or", "not", "you", "your",
         "user", "do", "like", "will", "can", "may", "we", "our", "they", "their", "which", "what",
         "when", "where", "who", "how", "why", "also", "than", "then", "all", "any", "each", "other",
