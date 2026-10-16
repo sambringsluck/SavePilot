@@ -190,6 +190,50 @@ enum FolderKnowledgeIndex {
                 )
             }
         }
+        let titleInContent = scored.map { candidate -> ((FolderKnowledgeProfile, Double, Double, Double, Double, [String]), [String]) in
+            let matches = specificSourceNameTerms.intersection(candidate.0.weights.keys).sorted()
+            return (candidate, matches)
+        }.filter { $0.1.count >= 2 }
+            .sorted {
+                if $0.1.count != $1.1.count { return $0.1.count > $1.1.count }
+                return $0.0.1 > $1.0.1
+            }
+        if let best = titleInContent.first {
+            let secondCount = titleInContent.dropFirst().first?.1.count ?? 0
+            if best.1.count > secondCount, best.0.1 >= 0.055 {
+                let evidence = Array((best.1 + best.0.5).reduce(into: [String]()) { values, term in
+                    if !values.contains(term) { values.append(term) }
+                }.prefix(8))
+                return FolderKnowledgeRecommendation(
+                    destination: URL(fileURLWithPath: best.0.0.path, isDirectory: true),
+                    score: min(0.95, 0.58 + best.0.1),
+                    margin: min(0.24, Double(best.1.count - secondCount) * 0.08),
+                    evidenceTerms: evidence,
+                    evidenceChannels: ["文件名/目录正文", "正文主题"],
+                    confidence: min(0.94, 0.73 + best.0.1 * 0.45)
+                )
+            }
+        }
+        // A hyperedge represents terms/entities that co-occurred in one real
+        // resident file. A uniquely strong edge is highly specific even when
+        // the containing folder mixes several projects and therefore has low
+        // global coherence (for example an author name plus a research topic).
+        let explicitEdge = scored
+            .filter { $0.2 >= 0.12 && $0.1 >= 0.06 && $0.5.count >= 3 }
+            .sorted { $0.2 > $1.2 }
+        if let best = explicitEdge.first {
+            let secondEdge = explicitEdge.dropFirst().first?.2 ?? 0
+            if best.2 - secondEdge >= 0.04 {
+                return FolderKnowledgeRecommendation(
+                    destination: URL(fileURLWithPath: best.0.path, isDirectory: true),
+                    score: min(0.95, 0.58 + best.2),
+                    margin: best.2 - secondEdge,
+                    evidenceTerms: best.5,
+                    evidenceChannels: ["同文件实体超边", "正文主题"],
+                    confidence: min(0.94, 0.71 + best.2 * 0.70 + best.1 * 0.25)
+                )
+            }
+        }
         guard let ranking = EvidenceRanker.rank(evidenceCandidates),
               let best = scored.first(where: { $0.0.path == ranking.identifier })
         else { return nil }
