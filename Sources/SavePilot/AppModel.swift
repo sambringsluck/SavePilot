@@ -522,7 +522,8 @@ final class AppModel: ObservableObject {
         var knowledgeCandidate = learned == nil ? await Task.detached(priority: .userInitiated) {
             FolderKnowledgeIndex.recommend(source: url, content: content, profiles: profiles)
         }.value : nil
-        if learned == nil, knowledgeCandidate == nil,
+        var embeddingShortlist: [FolderKnowledgeProfile] = []
+        if learned == nil,
            aiBackend == .ollama || aiBackend == .automatic {
             embeddingStatus = "Ollama embedding 正在检索最相关的本地目录…"
             if let shortlist = await OllamaEmbeddingRetriever.shared.shortlist(
@@ -531,6 +532,7 @@ final class AppModel: ObservableObject {
                 profiles: profiles,
                 model: ollamaEmbeddingModel
             ) {
+                embeddingShortlist = shortlist
                 knowledgeCandidate = await Task.detached(priority: .userInitiated) {
                     FolderKnowledgeIndex.recommend(source: url, content: content, profiles: shortlist)
                 }.value
@@ -539,6 +541,29 @@ final class AppModel: ObservableObject {
                     : "Embedding 已缩小到 \(shortlist.count) 个候选，并通过本地多证据复核。"
             } else {
                 embeddingStatus = "Ollama embedding 不可用或没有拉开候选差距，已安全回退。"
+            }
+        }
+        if learned == nil, !embeddingShortlist.isEmpty,
+           aiBackend == .ollama || aiBackend == .automatic,
+           let rerank = await OllamaRecommender.rerankFolders(
+                source: url,
+                content: content,
+                profiles: embeddingShortlist,
+                model: ollamaModel
+           ) {
+            if let profile = rerank.profile {
+                knowledgeCandidate = FolderKnowledgeRecommendation(
+                    destination: URL(fileURLWithPath: profile.path, isDirectory: true),
+                    score: rerank.confidence,
+                    margin: rerank.confidence,
+                    evidenceTerms: [rerank.reason],
+                    evidenceChannels: ["Embedding 召回", "Ollama 语义复核"],
+                    confidence: rerank.confidence
+                )
+                embeddingStatus = "本地模型已复核 embedding 候选。"
+            } else {
+                knowledgeCandidate = nil
+                embeddingStatus = "本地模型判定候选主题均不可靠，已拒绝误归类。"
             }
         }
         let strongTitleCategory = suggestionEngine.strongTitleCategoryName(for: url)
