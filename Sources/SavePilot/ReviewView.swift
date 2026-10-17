@@ -73,6 +73,10 @@ struct ReviewView: View {
                 }
                 .disabled(model.moveHistory.isEmpty)
                 .help("撤销最近一次由 SavePilot 完成的移动")
+                SettingsLink {
+                    Label("设置", systemImage: "gearshape")
+                }
+                .help("打开 SavePilot 设置（⌘,）")
             }
         }
     }
@@ -110,6 +114,11 @@ private struct WelcomeView: View {
                 Label("监听桌面与下载", systemImage: "tray.and.arrow.down")
                 Label("默认归档到文稿，可在设置中更改", systemImage: "folder")
                 Label("任何移动都需要你确认", systemImage: "hand.raised")
+                HStack {
+                    Label("可选：Ollama 提升语义匹配", systemImage: "sparkles")
+                    Spacer()
+                    Link("下载…", destination: URL(string: "https://ollama.com/download")!)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 24)
@@ -222,9 +231,13 @@ private struct SuggestionDetail: View {
                     VStack(alignment: .leading, spacing: 6) {
                         Text(suggestion.source.lastPathComponent)
                             .font(.title2.bold())
+                            .lineLimit(2)
+                            .truncationMode(.middle)
                             .textSelection(.enabled)
                         Text(suggestion.source.deletingLastPathComponent().path)
                             .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                            .truncationMode(.middle)
                             .textSelection(.enabled)
                     }
                     Spacer()
@@ -239,6 +252,8 @@ private struct SuggestionDetail: View {
                                 .foregroundStyle(.blue)
                             Text(suggestion.finalDestinationFolder.path)
                                 .font(.headline)
+                                .lineLimit(2)
+                                .truncationMode(.middle)
                                 .textSelection(.enabled)
                             Spacer()
                             if suggestion.createsFolder {
@@ -255,7 +270,7 @@ private struct SuggestionDetail: View {
                                 .foregroundStyle(.secondary)
                                 .padding(.top, 4)
                         }
-                        if let prerequisite = model.relocationPrerequisite(for: suggestion) {
+                        if let prerequisite = editedRelocationPrerequisite {
                             Label(
                                 "请先在左侧确认或拒绝“\(prerequisite.source.lastPathComponent)”的文件夹迁移建议",
                                 systemImage: "arrow.triangle.branch"
@@ -269,7 +284,7 @@ private struct SuggestionDetail: View {
                         TextField("~/Documents/目标文件夹", text: $editedPath)
                             .textFieldStyle(.roundedBorder)
                             .font(.system(.body, design: .monospaced))
-                            .onSubmit { model.confirmEditedPath(editedPath, fileName: editedFileName, for: suggestion) }
+                            .onSubmit { confirmCurrentChoice() }
                         HStack {
                             Label(
                                 editedFolderExists ? "目录已存在" : "目录不存在，确认后新建",
@@ -279,9 +294,9 @@ private struct SuggestionDetail: View {
                             .foregroundStyle(editedPathIsValid ? Color.secondary : Color.red)
                             Spacer()
                             Button("按此路径存放") {
-                                model.confirmEditedPath(editedPath, fileName: editedFileName, for: suggestion)
+                                confirmCurrentChoice()
                             }
-                            .disabled(!editedPathIsValid)
+                            .disabled(!canConfirmCurrentChoice)
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -325,14 +340,15 @@ private struct SuggestionDetail: View {
                 HStack {
                     Button("在 Finder 中查看") { model.reveal(suggestion.source) }
                     Spacer()
-                    Button("保留") { model.dismiss(suggestion) }
+                    Button("保留原位") { model.dismiss(suggestion) }
+                        .help("拒绝当前建议，不移动或重命名该项目")
                     Button("其他位置…") { model.chooseAndConfirm(suggestion) }
                     Button(isKeepingOriginalLocationAndName ? "确认保留" : "确认") {
-                        model.confirm(suggestion, fileName: editedFileName)
+                        confirmCurrentChoice()
                     }
                         .buttonStyle(.borderedProminent)
                         .keyboardShortcut(.defaultAction)
-                        .disabled(model.relocationPrerequisite(for: suggestion) != nil)
+                        .disabled(!canConfirmCurrentChoice)
                 }
             }
             .padding(28)
@@ -352,8 +368,38 @@ private struct SuggestionDetail: View {
         return FileManager.default.fileExists(atPath: expandedEditedPath, isDirectory: &isDirectory) && isDirectory.boolValue
     }
 
+    private var editedSuggestion: FileSuggestion? {
+        guard editedPathIsValid else { return nil }
+        return FileSuggestion(
+            id: suggestion.id,
+            source: suggestion.source,
+            destinationFolder: URL(fileURLWithPath: expandedEditedPath, isDirectory: true).standardizedFileURL,
+            proposedFolderName: "",
+            reason: suggestion.reason,
+            summary: suggestion.summary,
+            confidence: suggestion.confidence,
+            createsFolder: false,
+            detectedAt: suggestion.detectedAt,
+            proposedFileName: editedFileName
+        )
+    }
+
+    private var editedRelocationPrerequisite: FileSuggestion? {
+        editedSuggestion.flatMap { model.relocationPrerequisite(for: $0) }
+    }
+
+    private var canConfirmCurrentChoice: Bool {
+        editedPathIsValid && editedRelocationPrerequisite == nil
+    }
+
+    private func confirmCurrentChoice() {
+        guard canConfirmCurrentChoice else { return }
+        model.confirmEditedPath(editedPath, fileName: editedFileName, for: suggestion)
+    }
+
     private var isKeepingOriginalLocationAndName: Bool {
-        suggestion.source.deletingLastPathComponent().standardizedFileURL == suggestion.finalDestinationFolder.standardizedFileURL
+        guard let destination = editedSuggestion?.finalDestinationFolder else { return false }
+        return suggestion.source.deletingLastPathComponent().standardizedFileURL == destination.standardizedFileURL
             && editedFileName == suggestion.source.lastPathComponent
     }
 

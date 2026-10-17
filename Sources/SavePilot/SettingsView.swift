@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
+    @State private var showingResetLearningConfirmation = false
 
     var body: some View {
         Form {
@@ -64,7 +65,11 @@ struct SettingsView: View {
             }
 
             Section("隐私与安全") {
-                Label("内容分析完全在本机执行", systemImage: "lock.shield")
+                if model.aiBackend == .deepseekCloud {
+                    Label("DeepSeek 模式仅发送裁剪后的摘要；原文件不会上传", systemImage: "lock.shield")
+                } else {
+                    Label("内容分析完全在本机执行", systemImage: "lock.shield")
+                }
                 Label("移动前必须人工确认", systemImage: "hand.raised")
                 Label("同名文件永不覆盖，会自动添加序号", systemImage: "doc.on.doc")
             }
@@ -76,11 +81,13 @@ struct SettingsView: View {
                     }
                 }
                 TextField("Ollama 复核模型", text: $model.ollamaModel)
-                    .disabled(model.aiBackend != .ollama)
+                    .disabled(!usesOllama)
                 TextField("Ollama Embedding 模型", text: $model.ollamaEmbeddingModel)
-                    .disabled(model.aiBackend != .ollama)
-                if model.aiBackend == .ollama {
-                    Text("Embedding 找候选，复核模型处理歧义；离线时自动回退。")
+                    .disabled(!usesOllama)
+                if usesOllama {
+                    Text(model.aiBackend == .automatic
+                         ? "自动模式会在本机模型之外使用 Ollama embedding 召回候选；不可用时安全回退。"
+                         : "Embedding 找候选，复核模型处理歧义；离线时自动回退。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     if !model.embeddingStatus.isEmpty {
@@ -93,6 +100,18 @@ struct SettingsView: View {
                             .font(.caption)
                         Spacer()
                         Button("重新检测") { Task { await model.checkOllamaSetup() } }
+                    }
+                    if !model.ollamaSetupStatus.contains("已就绪") {
+                        HStack {
+                            Text("Ollama 是可选增强；推荐模型约需 6 GB 空间。")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Link("下载 Ollama…", destination: URL(string: "https://ollama.com/download")!)
+                        }
+                        Text("ollama pull qwen3-embedding:4b\nollama pull qwen3:4b")
+                            .font(.caption.monospaced())
+                            .textSelection(.enabled)
                     }
                 }
                 if model.aiBackend == .deepseekCloud {
@@ -111,6 +130,7 @@ struct SettingsView: View {
                             systemImage: model.deepSeekKeySaved ? "key.fill" : "key"
                         )
                         .font(.caption)
+                        .foregroundStyle(model.deepSeekKeySaved ? Color.secondary : Color.orange)
                     }
                     Toggle("发送更详细的内容（最多 4,000 字符）", isOn: $model.deepSeekSendDetailedContent)
                     Text("关闭时只发送文件名、类型、实体和最多 600 字符的本机摘要。目录路径只发送末级名称；原文件不会上传。")
@@ -136,7 +156,7 @@ struct SettingsView: View {
                     model.rebuildFolderKnowledge()
                 }
                 Button("清除从确认操作中学到的规则", role: .destructive) {
-                    model.resetLearning()
+                    showingResetLearningConfirmation = true
                 }
             }
 
@@ -180,6 +200,20 @@ struct SettingsView: View {
         .padding()
         .frame(width: 660, height: 650)
         .onAppear { model.refreshPermissions() }
+        .confirmationDialog(
+            "清除个人学习记录？",
+            isPresented: $showingResetLearningConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("清除学习记录", role: .destructive) { model.resetLearning() }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("这会删除根据你过去确认、拒绝和路径修改形成的本地规则，无法撤销。")
+        }
+    }
+
+    private var usesOllama: Bool {
+        model.aiBackend == .automatic || model.aiBackend == .ollama
     }
 }
 

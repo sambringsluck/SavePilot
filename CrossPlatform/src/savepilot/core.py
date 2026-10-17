@@ -193,6 +193,29 @@ def _extract_image(path: Path) -> tuple[str, list[str]]:
         return "", []
 
 
+_SENSITIVE_REPLACEMENTS = [
+    (
+        re.compile(r'''(?i)(["']?(?:access[_-]?token|session[_-]?token|refresh[_-]?token|id[_-]?token|api[_-]?key|client[_-]?secret|authorization|password)["']?\s*:\s*["'])[^"'\r\n]+(["'])'''),
+        r"\1[REDACTED]\2",
+    ),
+    (
+        re.compile(r"(?i)\b(access[_-]?token|session[_-]?token|refresh[_-]?token|id[_-]?token|api[_-]?key|client[_-]?secret|authorization|password)\b\s*=\s*[^\s&;]+"),
+        r"\1=[REDACTED]",
+    ),
+    (re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=\-]{12,}"), "Bearer [REDACTED]"),
+    (re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"), "[REDACTED_JWT]"),
+    (re.compile(r"\bsk-[A-Za-z0-9_-]{12,}\b"), "[REDACTED_API_KEY]"),
+]
+
+
+def _sanitize_sensitive(value: str) -> tuple[str, bool]:
+    output, detected = value, False
+    for pattern, replacement in _SENSITIVE_REPLACEMENTS:
+        output, count = pattern.subn(replacement, output)
+        detected = detected or count > 0
+    return output, detected
+
+
 def extract(path: Path) -> ExtractedContent:
     path = path.expanduser().resolve()
     suffix = path.suffix.lower()
@@ -217,11 +240,18 @@ def extract(path: Path) -> ExtractedContent:
             signals.extend(image_signals)
     except OSError:
         pass
-    text = re.sub(r"\s+", " ", text).strip()[:20_000]
+    text = re.sub(r"\s+", " ", text).strip()
     if not text:
         text = f"{path.stem} {suffix} {kind}"
         signals.append("metadata fallback")
-    return ExtractedContent(text=text, kind=kind, summary=text[:260], signals=signals)
+    text, sensitive = _sanitize_sensitive(text)
+    text = text[:20_000]
+    if sensitive:
+        signals.append("敏感凭证值已隐藏")
+        summary = "检测到敏感账号凭证或会话令牌；具体值已自动隐藏。请勿分享，并考虑撤销相关会话。"
+    else:
+        summary = text[:260]
+    return ExtractedContent(text=text, kind=kind, summary=summary, signals=sorted(set(signals)))
 
 
 def tokens(text: str) -> list[str]:
@@ -281,6 +311,8 @@ def _low_information_name(stem: str) -> bool:
 def suggest_filename(path: Path, content: ExtractedContent, subject: str | None, separator: str = "_") -> str | None:
     if not _low_information_name(path.stem):
         return None
+    if "敏感凭证值已隐藏" in content.signals:
+        return f"敏感账号凭证_请勿分享{path.suffix}"
     evidence = f"{path.stem} {content.summary} {content.text[:4000]}".lower()
     parts: list[str] = []
     if subject:

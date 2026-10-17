@@ -32,6 +32,23 @@ class SavePilotCoreTests(unittest.TestCase):
         content = ExtractedContent("Invoice A1 amount due tax 2026-10-16", "PDF", "invoice amount due tax", [])
         self.assertEqual(suggest_filename(Path("scan001.pdf"), content, None), "发票_2026-10-16.pdf")
 
+    def test_sensitive_credentials_are_redacted_and_named(self):
+        from savepilot.core import _sanitize_sensitive
+        raw = '{"accessToken":"eyJheader.payload.signature","sessionToken":"private-session-value-123456"}'
+        sanitized, detected = _sanitize_sensitive(raw)
+        self.assertTrue(detected)
+        self.assertNotIn("private-session-value-123456", sanitized)
+        content = ExtractedContent(
+            sanitized,
+            "Office 文档",
+            "检测到敏感账号凭证；具体值已隐藏。",
+            ["敏感凭证值已隐藏"],
+        )
+        self.assertEqual(
+            suggest_filename(Path("1009.docx"), content, None),
+            "敏感账号凭证_请勿分享.docx",
+        )
+
     def test_protected_project_folder_is_not_hijacked(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

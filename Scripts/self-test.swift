@@ -36,7 +36,8 @@ struct SavePilotSelfTest {
         try testEmbeddingCandidateShortlist()
         try testFolderRelocationAndUndo()
         try testFileNameSuggestionAndRename()
-        print("SavePilot self-test: 29/29 passed")
+        try testSensitiveContentRedactionAndNaming()
+        print("SavePilot self-test: 30/30 passed")
     }
 
     private static func testExistingFolderSuggestion() throws {
@@ -861,6 +862,28 @@ struct SavePilotSelfTest {
         )?.fileName == "发票_2026-10-16.pdf" else {
             throw SelfTestError.failed("non-academic filename suggestion")
         }
+    }
+
+    private static func testSensitiveContentRedactionAndNaming() throws {
+        let raw = #"{"accessToken":"eyJheader.payload.signature","sessionToken":"private-session-value-123456"}"#
+        let result = SensitiveContentSanitizer.sanitize(raw)
+        guard result.detected,
+              !result.text.contains("private-session-value-123456"),
+              !result.text.contains("eyJheader.payload.signature")
+        else { throw SelfTestError.failed("sensitive credential redaction") }
+
+        let content = ExtractedContent(
+            text: result.text,
+            kind: "Office 文档",
+            summary: "检测到敏感账号凭证；具体值已隐藏。",
+            signals: ["Office XML内容", "敏感凭证值已隐藏"]
+        )
+        guard FileNameSuggester.suggest(
+            source: URL(fileURLWithPath: "/tmp/1009.docx"),
+            content: content,
+            academic: nil
+        )?.fileName == "敏感账号凭证_请勿分享.docx"
+        else { throw SelfTestError.failed("sensitive credential filename suggestion") }
     }
 
     private static func temporaryDirectory() throws -> URL {

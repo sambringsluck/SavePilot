@@ -1,6 +1,45 @@
 import Foundation
 import UniformTypeIdentifiers
 
+enum SensitiveContentSanitizer {
+    struct Result {
+        let text: String
+        let detected: Bool
+    }
+
+    private static let replacements: [(pattern: String, template: String)] = [
+        (
+            #"(?i)([\"']?(?:access[_-]?token|session[_-]?token|refresh[_-]?token|id[_-]?token|api[_-]?key|client[_-]?secret|authorization|password)[\"']?\s*:\s*[\"'])[^\"'\r\n]+([\"'])"#,
+            "$1[REDACTED]$2"
+        ),
+        (
+            #"(?i)\b(access[_-]?token|session[_-]?token|refresh[_-]?token|id[_-]?token|api[_-]?key|client[_-]?secret|authorization|password)\b\s*=\s*[^\s&;]+"#,
+            "$1=[REDACTED]"
+        ),
+        (#"(?i)\bBearer\s+[A-Za-z0-9._~+/=\-]{12,}"#, "Bearer [REDACTED]"),
+        (#"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"#, "[REDACTED_JWT]"),
+        (#"\bsk-[A-Za-z0-9_-]{12,}\b"#, "[REDACTED_API_KEY]")
+    ]
+
+    static func sanitize(_ value: String) -> Result {
+        var output = value
+        var detected = false
+        for replacement in replacements {
+            guard let regex = try? NSRegularExpression(pattern: replacement.pattern) else { continue }
+            let range = NSRange(output.startIndex..<output.endIndex, in: output)
+            if regex.firstMatch(in: output, range: range) != nil {
+                detected = true
+                output = regex.stringByReplacingMatches(
+                    in: output,
+                    range: range,
+                    withTemplate: replacement.template
+                )
+            }
+        }
+        return Result(text: output, detected: detected)
+    }
+}
+
 enum ContentExtractor {
     private static let textExtensions: Set<String> = [
         "txt", "md", "markdown", "csv", "tsv", "json", "jsonl", "yaml", "yml", "toml", "xml",
@@ -95,17 +134,27 @@ enum ContentExtractor {
         let cleaned = text
             .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        let bounded = String(cleaned.prefix(20_000))
+        let sanitized = SensitiveContentSanitizer.sanitize(cleaned)
+        let bounded = String(sanitized.text.prefix(20_000))
         let insights = AdvancedExtractors.linguisticInsights(for: bounded)
         var enrichedMetadata = metadata
         if let language = insights.language { enrichedMetadata["语言"] = language }
-        let summaryBase = bounded.isEmpty ? "未提取到可读内容，已使用格式和元数据判断" : String(bounded.prefix(260))
-        let signalSummary = signals.isEmpty ? "" : "\n技术信号：" + signals.joined(separator: "、")
+        if sanitized.detected { enrichedMetadata["敏感内容"] = "检测到账号凭证，具体值已隐藏" }
+        let safeSignals = sanitized.detected
+            ? Array(Set(signals + ["敏感凭证值已隐藏"])).sorted()
+            : signals
+        let summaryBase: String
+        if sanitized.detected {
+            summaryBase = "检测到敏感账号凭证或会话令牌；具体值已自动隐藏。请勿分享，并考虑撤销相关会话。"
+        } else {
+            summaryBase = bounded.isEmpty ? "未提取到可读内容，已使用格式和元数据判断" : String(bounded.prefix(260))
+        }
+        let signalSummary = safeSignals.isEmpty ? "" : "\n技术信号：" + safeSignals.joined(separator: "、")
         return ExtractedContent(
             text: bounded,
             kind: kind,
             summary: summaryBase + signalSummary,
-            signals: signals,
+            signals: safeSignals,
             entities: insights.entities,
             metadata: enrichedMetadata
         )

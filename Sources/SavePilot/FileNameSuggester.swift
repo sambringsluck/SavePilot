@@ -16,6 +16,16 @@ enum FileNameSuggester {
         let originalBase = source.deletingPathExtension().lastPathComponent
         guard isLowInformation(originalBase) else { return nil }
 
+        if content.signals.contains("敏感凭证值已隐藏") {
+            let base = "敏感账号凭证_请勿分享"
+            let ext = source.pathExtension
+            return FileNameRecommendation(
+                fileName: ext.isEmpty ? base : "\(base).\(ext)",
+                reason: "原文件名信息量较低，且正文包含已脱敏的账号凭证或会话令牌",
+                confidence: 0.99
+            )
+        }
+
         let evidence = "\(originalBase) \(content.summary) \(String(content.text.prefix(4_000)))".lowercased()
         if academic == nil {
             return nonAcademicSuggestion(source: source, evidence: evidence, preferredSeparator: preferredSeparator)
