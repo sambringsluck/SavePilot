@@ -600,10 +600,16 @@ final class AppModel: ObservableObject {
         let academicTopic = suggestionEngine.specificTopicMatch(
             for: url, content: content, profile: userProfile
         )
+        let directProjectTopic = DocumentRelationshipEngine.specificTopicName(
+            for: url, content: content
+        )
         let topic = await Task.detached(priority: .userInitiated) {
             suggestionEngine.topicName(for: url, content: content, profile: userProfile)
         }.value
-        let learned = learningStore.recommendation(for: url, content: content, roots: roots)
+        let retrievedMemory = learningStore.recommendation(for: url, content: content, roots: roots)
+        let learned = retrievedMemory.flatMap {
+            suggestionEngine.acceptsPersonalMemory($0, academicMatch: academicTopic) ? $0 : nil
+        }
         let profiles = folderKnowledgeProfiles
         var knowledgeCandidate = learned == nil ? await Task.detached(priority: .userInitiated) {
             FolderKnowledgeIndex.recommend(source: url, content: content, profiles: profiles)
@@ -680,7 +686,7 @@ final class AppModel: ObservableObject {
             && (suggestionEngine.stableNewFolderName(
                 for: url, content: content, profile: userProfile
             ) != nil || novelThemeReady)
-        var fallback = await Task.detached(priority: .userInitiated) {
+        let contentFallback = await Task.detached(priority: .userInitiated) {
             suggestionEngine.suggest(
                 for: url,
                 content: content,
@@ -689,6 +695,7 @@ final class AppModel: ObservableObject {
                 profile: userProfile
             )
         }.value
+        var fallback = contentFallback
         if let learned {
             fallback = FileSuggestion(
                 id: fallback.id,
@@ -755,6 +762,27 @@ final class AppModel: ObservableObject {
             roots: roots,
             profiles: profiles
         )
+        suggestion = enforceAcademicBoundary(
+            suggestion,
+            academicTopic: academicTopic,
+            fallback: contentFallback
+        )
+        if let directProjectTopic, let root = roots.first?.standardizedFileURL {
+            let target = root.appendingPathComponent(directProjectTopic, isDirectory: true)
+            let exists = FileManager.default.fileExists(atPath: target.path)
+            suggestion = FileSuggestion(
+                id: suggestion.id,
+                source: suggestion.source,
+                destinationFolder: exists ? target : root,
+                proposedFolderName: exists ? "" : directProjectTopic,
+                reason: "专属项目识别：文件名中的项目标识与正文主题共同指向“\(directProjectTopic)”，优先于宽泛学科和目录近似结果。",
+                summary: suggestion.summary,
+                confidence: max(0.92, suggestion.confidence),
+                createsFolder: !exists,
+                detectedAt: suggestion.detectedAt,
+                proposedFileName: suggestion.proposedFileName
+            )
+        }
         if let fileName = FileNameSuggester.suggest(
             source: url,
             content: content,
@@ -784,6 +812,16 @@ final class AppModel: ObservableObject {
             contents: recentContentByPath,
             roots: roots
         )
+        // Consensus is the final mutation stage, so apply the same semantic
+        // boundary once more at the publication edge. No late graph, series,
+        // RAG, model, or memory decision may reintroduce a subject conflict.
+        if let index = suggestions.firstIndex(where: { $0.id == suggestion.id }) {
+            suggestions[index] = enforceAcademicBoundary(
+                suggestions[index],
+                academicTopic: academicTopic,
+                fallback: contentFallback
+            )
+        }
         let emittedSuggestion = suggestions.first(where: { $0.id == suggestion.id }) ?? suggestion
         state = .ready
         SavePanelObserver.writeRuntimeDiagnostics(RuntimeDiagnostics(
@@ -870,6 +908,34 @@ final class AppModel: ObservableObject {
             createsFolder: false,
             detectedAt: suggestion.detectedAt,
             proposedFileName: suggestion.proposedFileName
+        )
+    }
+
+    private func enforceAcademicBoundary(
+        _ suggestion: FileSuggestion,
+        academicTopic: AcademicSubjectMatch?,
+        fallback: FileSuggestion
+    ) -> FileSuggestion {
+        guard let academicTopic,
+              engine.destinationConflictsWithAcademicTopic(
+                suggestion.finalDestinationFolder,
+                match: academicTopic
+              ),
+              let destinationTopic = AcademicSubjectClassifier.classify(
+                title: suggestion.finalDestinationFolder.lastPathComponent, body: ""
+              )
+        else { return suggestion }
+        return FileSuggestion(
+            id: fallback.id,
+            source: fallback.source,
+            destinationFolder: fallback.destinationFolder,
+            proposedFolderName: fallback.proposedFolderName,
+            reason: "学科边界校验：正文以 \(Int(academicTopic.confidence * 100))% 置信度识别为“\(academicTopic.folderName)”，已拒绝冲突的“\(destinationTopic.folderName)”目录候选。\(fallback.reason)",
+            summary: fallback.summary,
+            confidence: academicTopic.confidence,
+            createsFolder: fallback.createsFolder,
+            detectedAt: fallback.detectedAt,
+            proposedFileName: fallback.proposedFileName
         )
     }
 

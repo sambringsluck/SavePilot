@@ -271,6 +271,7 @@ def main() -> None:
     cache.ensure(rows)
     history = []
     best_f1 = -1.0
+    best_round_index = 0
     plateau = 0
     stop_reason = "达到最大迭代轮数"
     dev_positive_rate = sum(row["should_link"] for row in development) / len(development)
@@ -292,7 +293,9 @@ def main() -> None:
         drift = abs(projected_positive_rate - dev_positive_rate)
         improvement = dev_metrics["f1"] - best_f1 if best_f1 >= 0 else dev_metrics["f1"]
         plateau = plateau + 1 if best_f1 >= 0 and improvement < args.minimum_improvement else 0
-        best_f1 = max(best_f1, dev_metrics["f1"])
+        if dev_metrics["f1"] > best_f1:
+            best_f1 = dev_metrics["f1"]
+            best_round_index = len(history)
         history.append({
             "round": round_index, "threshold": threshold, "weights": weights, "train_size": len(train),
             "train": train_metrics, "development": dev_metrics, "rule_holdout": rule_metrics,
@@ -325,18 +328,22 @@ def main() -> None:
             stop_reason = "规则矛盾占比超过 5%"; break
         if drift > .20:
             stop_reason = "训练集与开发集正负分布偏离超过 20%"; break
-        if plateau >= args.plateau_rounds and dev_metrics["precision"] >= args.minimum_precision:
-            stop_reason = f"V_dev 连续 {args.plateau_rounds} 轮提升不足 {args.minimum_improvement:.3f}，且精确率门槛已满足"
+        if plateau >= args.plateau_rounds:
+            stop_reason = f"V_dev 连续 {args.plateau_rounds} 轮未提升；回滚并保留最佳检查点"
             break
         train.extend(additions)
         cache.ensure(additions)
 
-    final = history[-1]
+    # Oracle augmentation is allowed to explore, but a later synthetic round
+    # must never replace a stronger V_dev checkpoint merely because it ran
+    # later. T_rule remains monitoring-only and does not select the winner.
+    final = history[best_round_index]
     payload = {
         "model": args.model, "threshold": final["threshold"],
         "feature_weights": final["weights"],
         "features": ["bias", "embedding", "embedding_squared", "lexical_cosine", "token_jaccard", "token_containment", "filename_cosine", "length_ratio", "structured_relation", "embedding_x_lexical"],
         "minimum_precision": args.minimum_precision, "stop_reason": stop_reason,
+        "selected_round": final["round"],
         "rounds": history,
         "T_real": {"status": "not_available", "reason": "已知个人文件只作回归，不冒充未见真实测试集"},
         "conclusion": "本轮训练的是 Oracle 规则蒸馏的关系判定层；尚不能声称拟合真实个人分布。",

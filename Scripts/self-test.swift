@@ -38,7 +38,9 @@ struct SavePilotSelfTest {
         try testFileNameSuggestionAndRename()
         try testSensitiveContentRedactionAndNaming()
         try testReleaseUpdateOrdering()
-        print("SavePilot self-test: 31/31 passed")
+        try testStandaloneIEOProjectRouting()
+        try testGeneralEvidenceArbitration()
+        print("SavePilot self-test: 33/33 passed")
     }
 
     private static func testExistingFolderSuggestion() throws {
@@ -68,7 +70,9 @@ struct SavePilotSelfTest {
         )
         guard !firstSuggestion.createsFolder,
               clusteredSuggestion.createsFolder,
-              clusteredSuggestion.proposedFolderName == "医疗"
+              clusteredSuggestion.proposedFolderName == "医疗",
+              clusteredSuggestion.finalDestinationFolder.deletingLastPathComponent().standardizedFileURL
+                == root.standardizedFileURL
         else { throw SelfTestError.failed("new folder threshold") }
     }
 
@@ -892,6 +896,65 @@ struct SavePilotSelfTest {
               !UpdateChecker.isNewer(candidate: "v1.2.0-preview.4", than: "v1.2.0-preview.4"),
               UpdateChecker.isNewer(candidate: "v1.2.0-preview.4", than: "v1.2.0")
         else { throw SelfTestError.failed("release update ordering") }
+    }
+
+    private static func testStandaloneIEOProjectRouting() throws {
+        let source = URL(fileURLWithPath: "/tmp/[Senior] IEO China 2026 Practice Chamber with Answers.pdf")
+        let content = ExtractedContent(
+            text: "Economics Principles opportunity cost market supply demand elasticity GDP",
+            kind: "PDF / OCR",
+            summary: "IEO China Senior Division economics practice questions"
+        )
+        guard DocumentRelationshipEngine.specificTopicName(for: source, content: content)
+                == "IEO经济学竞赛",
+              let academic = AcademicSubjectClassifier.classify(source: source, content: content),
+              academic.folderName == "经济学",
+              SuggestionEngine().destinationConflictsWithAcademicTopic(
+                URL(fileURLWithPath: "/tmp/物理", isDirectory: true),
+                match: academic
+              ),
+              !SuggestionEngine().destinationConflictsWithAcademicTopic(
+                URL(fileURLWithPath: "/tmp/经济学", isDirectory: true),
+                match: academic
+              )
+        else { throw SelfTestError.failed("standalone IEO project routing") }
+    }
+
+    private static func testGeneralEvidenceArbitration() throws {
+        let engine = SuggestionEngine()
+        let cases: [(String, String, String)] = [
+            ("AMC Practice Problems.pdf", "mathematics algebra geometry theorem competition practice", "AMC数学竞赛"),
+            ("BIOX Research Notes.docx", "biology cell genetics evolution protein research paper", "BIOX生物研究"),
+            ("CSX Course Homework.pptx", "computer science algorithm programming database course homework", "CSX计算机课程")
+        ]
+        for (name, body, expected) in cases {
+            let source = URL(fileURLWithPath: "/tmp/\(name)")
+            let content = ExtractedContent(text: body, kind: "测试", summary: body)
+            guard DocumentRelationshipEngine.specificTopicName(for: source, content: content) == expected else {
+                throw SelfTestError.failed("generic project derivation: \(name)")
+            }
+        }
+
+        let economics = AcademicSubjectClassifier.classify(
+            title: "Practice", body: "economics market supply demand elasticity equilibrium GDP"
+        )!
+        let weakWrongMemory = LearningStore.Recommendation(
+            destination: URL(fileURLWithPath: "/tmp/物理", isDirectory: true),
+            confidence: 0.67,
+            evidence: "one confirmation",
+            approvals: 1,
+            rejections: 0
+        )
+        let weakCompatibleMemory = LearningStore.Recommendation(
+            destination: URL(fileURLWithPath: "/tmp/经济学", isDirectory: true),
+            confidence: 0.67,
+            evidence: "one confirmation",
+            approvals: 1,
+            rejections: 0
+        )
+        guard !engine.acceptsPersonalMemory(weakWrongMemory, academicMatch: economics),
+              engine.acceptsPersonalMemory(weakCompatibleMemory, academicMatch: economics)
+        else { throw SelfTestError.failed("general memory/content arbitration") }
     }
 
     private static func temporaryDirectory() throws -> URL {

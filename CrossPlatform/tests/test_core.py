@@ -56,6 +56,33 @@ class SavePilotCoreTests(unittest.TestCase):
         self.assertEqual(match[0], "物理")
         self.assertEqual(suggest_filename(Path("hw3.pdf"), content, match[0]), "AP物理C_力学_作业3.pdf")
 
+    def test_standalone_ieo_document_uses_project_folder(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "[Senior] IEO China 2026 Practice Chamber with Answers.txt"
+            source.write_text(
+                "Economics Principles opportunity cost market supply demand elasticity GDP",
+                encoding="utf-8",
+            )
+            suggestion = recommend(source, [root], profiles=[])
+            self.assertEqual(Path(suggestion.destination), root.resolve() / "IEO经济学竞赛")
+            self.assertTrue(suggestion.creates_folder)
+            self.assertGreaterEqual(suggestion.confidence, .92)
+
+    def test_project_folder_derivation_is_not_ieo_specific(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            cases = [
+                ("AMC Practice Problems.txt", "mathematics algebra geometry theorem competition practice", "AMC数学竞赛"),
+                ("BIOX Research Notes.txt", "biology cell genetics evolution protein research paper", "BIOX生物研究"),
+                ("CSX Course Homework.txt", "computer science algorithm programming database course homework", "CSX计算机课程"),
+            ]
+            for name, body, expected in cases:
+                source = root / name
+                source.write_text(body, encoding="utf-8")
+                result = recommend(source, [root], profiles=[])
+                self.assertEqual(Path(result.destination), root.resolve() / expected)
+
     def test_profile_cannot_invent_subject(self):
         self.assertIsNone(classify_subject("hw4", "Complete questions one through ten before class"))
 

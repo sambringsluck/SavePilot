@@ -9,6 +9,9 @@ use tauri::{
 use tauri_plugin_shell::ShellExt;
 
 const RELEASES_API: &str = "https://api.github.com/repos/sambringsluck/SavePilot/releases?per_page=12";
+// Installer ecosystems impose stricter package-version syntax than GitHub
+// prerelease tags. Keep update identity independent from MSI/RPM metadata.
+const CURRENT_RELEASE_VERSION: &str = "1.2.0-preview.5";
 
 #[derive(Deserialize)]
 struct ReleaseAsset {
@@ -145,7 +148,7 @@ fn is_newer_release(current: &Version, candidate: &Version) -> bool {
 
 #[tauri::command]
 async fn check_for_update() -> Result<Option<UpdateInfo>, String> {
-    let current = Version::parse(env!("CARGO_PKG_VERSION")).map_err(|error| error.to_string())?;
+    let current = Version::parse(CURRENT_RELEASE_VERSION).map_err(|error| error.to_string())?;
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(8))
         .user_agent(format!("SavePilot/{}", current))
@@ -273,11 +276,11 @@ mod tests {
     fn detects_normal_version_increase() {
         assert!(is_newer_release(
             &Version::parse("1.2.0-preview.3").unwrap(),
-            &Version::parse("1.2.0-preview.4").unwrap()
+            &Version::parse("1.2.0-preview.5").unwrap()
         ));
         assert!(!is_newer_release(
-            &Version::parse("1.2.0-preview.4").unwrap(),
-            &Version::parse("1.2.0-preview.4").unwrap()
+            &Version::parse("1.2.0-preview.5").unwrap(),
+            &Version::parse("1.2.0-preview.5").unwrap()
         ));
     }
 
@@ -285,7 +288,7 @@ mod tests {
     fn upgrades_legacy_preview_that_used_stable_version_number() {
         assert!(is_newer_release(
             &Version::parse("1.2.0").unwrap(),
-            &Version::parse("1.2.0-preview.4").unwrap()
+            &Version::parse("1.2.0-preview.5").unwrap()
         ));
     }
 }

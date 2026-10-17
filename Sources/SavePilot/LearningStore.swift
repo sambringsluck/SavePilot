@@ -44,6 +44,8 @@ final class LearningStore {
         let destination: URL
         let confidence: Double
         let evidence: String
+        let approvals: Int
+        let rejections: Int
     }
 
     struct TrainingEvent: Codable {
@@ -163,7 +165,9 @@ final class LearningStore {
         return Recommendation(
             destination: URL(fileURLWithPath: best.0.destinationPath, isDirectory: true),
             confidence: confidence,
-            evidence: "检索到 \(best.0.approvals) 次相似归档记忆，且领先其他记忆 \(Int(margin * 100)) 分"
+            evidence: "检索到 \(best.0.approvals) 次相似归档记忆，且领先其他记忆 \(Int(margin * 100)) 分",
+            approvals: best.0.approvals,
+            rejections: best.0.rejections
         )
     }
 

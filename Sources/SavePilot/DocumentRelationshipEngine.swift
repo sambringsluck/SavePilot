@@ -55,6 +55,40 @@ enum DocumentRelationshipEngine {
             url.deletingPathExtension().lastPathComponent.lowercased()
                 .split { !$0.isLetter && !$0.isNumber }.map(String.init)
         )
+        // Derive reusable project folders from any explicit acronym plus an
+        // independently established content subject. This avoids adding a
+        // special case for every competition, course, or research program.
+        let rawTitleTokens = url.deletingPathExtension().lastPathComponent
+            .split { !$0.isLetter && !$0.isNumber }.map(String.init)
+        let ignoredAcronyms: Set<String> = [
+            "PDF", "DOC", "DOCX", "PPT", "PPTX", "XLS", "XLSX", "TXT",
+            "FINAL", "DRAFT", "COPY", "HW", "HOMEWORK", "ANSWERS", "SENIOR", "JUNIOR"
+        ]
+        let acronym = rawTitleTokens.first { token in
+            let upper = token.uppercased()
+            return token == upper && token.range(of: "^[A-Z][A-Z0-9]{1,7}$", options: .regularExpression) != nil
+                && !ignoredAcronyms.contains(upper)
+        }
+        if let acronym,
+           let subject = AcademicSubjectClassifier.classify(
+               title: url.deletingPathExtension().lastPathComponent,
+               body: "\(content.summary) \(String(content.text.prefix(12_000)))"
+           ), subject.confidence >= 0.82 {
+            let purpose: String
+            if ["olympiad", "competition", "contest", "practice", "problem set", "竞赛", "比赛", "题库", "真题"]
+                .contains(where: { contains($0, in: text) }) {
+                purpose = "竞赛"
+            } else if ["research", "study", "paper", "研究", "论文"]
+                .contains(where: { contains($0, in: text) }) {
+                purpose = "研究"
+            } else if ["course", "class", "lesson", "homework", "课程", "课堂", "作业"]
+                .contains(where: { contains($0, in: text) }) {
+                purpose = "课程"
+            } else {
+                purpose = "项目"
+            }
+            return "\(acronym.uppercased())\(subject.folderName)\(purpose)"
+        }
         // "sat" is too polysemous to act as a body-level relation signature.
         // It may identify a directory project only when the directory title
         // itself says SAT/PSAT and sampled contents confirm exam material.

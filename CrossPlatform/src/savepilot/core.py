@@ -406,6 +406,34 @@ def document_relationship(
     return DocumentRelationship(min(.90, score), ranked[:8], None, ["content terms", "file-level cosine similarity"])
 
 
+def specific_project_topic(path: Path, content: ExtractedContent) -> str | None:
+    evidence = f"{path.stem} {content.summary} {content.text[:12000]}".casefold()
+    ignored = {
+        "PDF", "DOC", "DOCX", "PPT", "PPTX", "XLS", "XLSX", "TXT",
+        "FINAL", "DRAFT", "COPY", "HW", "HOMEWORK", "ANSWERS", "SENIOR", "JUNIOR",
+    }
+    acronym = next((
+        token.upper() for token in re.findall(r"[A-Za-z][A-Za-z0-9]{1,7}", path.stem)
+        if token == token.upper() and token.upper() not in ignored
+    ), None)
+    subject_match = classify_subject(path.stem, f"{content.summary} {content.text[:12000]}")
+    if acronym and subject_match and subject_match[1] >= .82:
+        if any(term in evidence for term in ("olympiad", "competition", "contest", "practice", "problem set", "竞赛", "比赛", "题库", "真题")):
+            purpose = "竞赛"
+        elif any(term in evidence for term in ("research", "study", "paper", "研究", "论文")):
+            purpose = "研究"
+        elif any(term in evidence for term in ("course", "class", "lesson", "homework", "课程", "课堂", "作业")):
+            purpose = "课程"
+        else:
+            purpose = "项目"
+        return f"{acronym}{subject_match[0]}{purpose}"
+    for topic, groups, minimum in RELATIONSHIP_SIGNATURES:
+        matched = sum(any(term.casefold() in evidence for term in group) for group in groups)
+        if matched >= minimum:
+            return topic
+    return None
+
+
 def build_profile(folder: Path, limit: int = 18) -> FolderProfile | None:
     try:
         files = [item for item in folder.iterdir() if item.is_file() and item.suffix.lower() in PROFILE_EXTENSIONS and item.stat().st_size <= 80_000_000]
@@ -510,6 +538,16 @@ def recommend(path: Path, roots: list[Path], profiles: list[FolderProfile] | Non
     destination: Path | None = None
     reason = ""
     creates_folder = False
+
+    project_topic = specific_project_topic(path, content)
+    if project_topic:
+        destination = roots[0].expanduser().resolve() / project_topic
+        proposed = suggest_filename(path, content, subject) or path.name
+        return Suggestion(
+            str(path), str(destination), proposed,
+            f"文件名项目标识与正文主题共同指向“{project_topic}”",
+            max(.92, confidence), not destination.exists(),
+        )
 
     if subject:
         aliases = {subject.casefold(), *(alias.casefold() for alias in SUBJECTS[subject][0])}

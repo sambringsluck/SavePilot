@@ -50,9 +50,12 @@ struct SuggestionEngine {
         let existing = bestAcademicFolder(match: academic, folders: existingFolders)
             ?? bestExistingFolder(category: category, evidence: retrievalEvidence, folders: existingFolders, sourceExtension: source.pathExtension.lowercased())
 
-        let destination = existing ?? bestInbox(in: existingFolders) ?? source.deletingLastPathComponent()
         let proposedTopic = academic?.folderName ?? category.folder
         let createsFolder = existing == nil && allowCreatingFolder && proposedTopic != "待整理"
+        let destination = existing
+            ?? (createsFolder ? roots.first?.standardizedFileURL : nil)
+            ?? bestInbox(in: existingFolders)
+            ?? source.deletingLastPathComponent()
         let folderName = createsFolder ? proposedTopic : ""
         let reason: String
         if let existing {
@@ -139,6 +142,39 @@ struct SuggestionEngine {
             }
             return category.aliases.contains { normalized == $0.lowercased() }
         }
+    }
+
+    func destinationConflictsWithAcademicTopic(
+        _ destination: URL,
+        match: AcademicSubjectMatch
+    ) -> Bool {
+        guard match.confidence >= 0.90,
+              let destinationTopic = AcademicSubjectClassifier.classify(
+                title: destination.lastPathComponent,
+                body: ""
+              )
+        else { return false }
+        return destinationTopic.folderName != match.folderName
+    }
+
+    func acceptsPersonalMemory(
+        _ recommendation: LearningStore.Recommendation,
+        academicMatch: AcademicSubjectMatch?
+    ) -> Bool {
+        guard recommendation.approvals > recommendation.rejections else { return false }
+        guard let academicMatch, academicMatch.confidence >= 0.82 else {
+            return true
+        }
+        // A single confirmation is useful training evidence, not authority to
+        // contradict the current file. Repeated memories also remain subject
+        // to a hard semantic boundary.
+        if destinationConflictsWithAcademicTopic(recommendation.destination, match: academicMatch) {
+            return false
+        }
+        if recommendation.approvals < 2 {
+            return destination(recommendation.destination, matchesCategoryNamed: academicMatch.folderName)
+        }
+        return true
     }
 
     /// Returns a bounded, reusable category rather than a one-off folder named
