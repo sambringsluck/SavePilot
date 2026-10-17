@@ -45,7 +45,7 @@ jobs:
           if [[ "$GITHUB_REF_NAME" == *preview* || "$GITHUB_REF_NAME" == *beta* || "$GITHUB_REF_NAME" == *rc* ]]; then
             release_flags+=(--prerelease)
           fi
-          gh release create "$GITHUB_REF_NAME" SavePilot-macOS.zip SavePilot-macOS.zip.sha256 \
-            --generate-notes \
-            --title "SavePilot $GITHUB_REF_NAME" \
-            "${release_flags[@]}"
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || \
+            gh release create "$GITHUB_REF_NAME" --generate-notes --title "SavePilot $GITHUB_REF_NAME" "${release_flags[@]}" || \
+            gh release view "$GITHUB_REF_NAME" >/dev/null
+          gh release upload "$GITHUB_REF_NAME" SavePilot-macOS.zip SavePilot-macOS.zip.sha256 --clobber
