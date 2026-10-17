@@ -45,6 +45,9 @@ final class AppModel: ObservableObject {
     @Published var watchedFoldersReadable = false
     @Published var lastPermissionCheck: Date?
     @Published var showWelcome = false
+    @Published var availableUpdate: AppUpdateInfo?
+    @Published var updateCheckStatus = ""
+    @Published var updateCheckRunning = false
 
     private var monitor: FolderMonitor?
     private var savePanelObserver: SavePanelObserver?
@@ -81,6 +84,10 @@ final class AppModel: ObservableObject {
             guard let self, !self.showWelcome else { return }
             await self.startInitialAnalysis()
         }
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            await self?.checkForUpdates()
+        }
     }
 
     func checkOllamaSetup() async {
@@ -91,6 +98,31 @@ final class AppModel: ObservableObject {
     }
 
     var pendingCount: Int { suggestions.count }
+
+    func checkForUpdates(manual: Bool = false) async {
+        guard !updateCheckRunning else { return }
+        updateCheckRunning = true
+        if manual { updateCheckStatus = "正在检查…" }
+        defer { updateCheckRunning = false }
+        do {
+            availableUpdate = try await UpdateChecker.latest()
+            if manual {
+                updateCheckStatus = availableUpdate == nil ? "当前已经是最新版本" : "发现新版本 \(availableUpdate!.version)"
+            }
+        } catch {
+            if manual { updateCheckStatus = "暂时无法检查更新，请稍后重试" }
+        }
+    }
+
+    func downloadAvailableUpdate() {
+        guard let url = availableUpdate?.downloadURL else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    func openUpdateReleasePage() {
+        guard let url = availableUpdate?.releaseURL else { return }
+        NSWorkspace.shared.open(url)
+    }
 
     func restartMonitoring() {
         monitor?.start(folders: watchedFolders.map(\.url))

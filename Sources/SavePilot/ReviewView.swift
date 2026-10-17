@@ -3,6 +3,7 @@ import SwiftUI
 struct ReviewView: View {
     @EnvironmentObject private var model: AppModel
     @State private var selectedSuggestionID: UUID?
+    @State private var showingUpdate = false
 
     var body: some View {
         NavigationSplitView {
@@ -47,12 +48,26 @@ struct ReviewView: View {
                 .environmentObject(model)
                 .interactiveDismissDisabled()
         }
+        .sheet(isPresented: $showingUpdate) {
+            if let update = model.availableUpdate {
+                UpdateView(update: update)
+                    .environmentObject(model)
+            }
+        }
         .onAppear { selectFirstIfNeeded() }
         .onChange(of: model.suggestions.map(\.id)) { _, _ in
             selectFirstIfNeeded()
         }
         .toolbar {
             ToolbarItemGroup {
+                if let update = model.availableUpdate {
+                    Button {
+                        showingUpdate = true
+                    } label: {
+                        Label("新版本", systemImage: "arrow.down.circle.fill")
+                    }
+                    .help("下载 SavePilot \(update.version)")
+                }
                 Button {
                     model.analyzeExistingFiles()
                 } label: {
@@ -97,6 +112,44 @@ struct ReviewView: View {
         if selectedSuggestionID == nil || !model.suggestions.contains(where: { $0.id == selectedSuggestionID }) {
             selectedSuggestionID = model.suggestions.first?.id
         }
+    }
+}
+
+private struct UpdateView: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    let update: AppUpdateInfo
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Image(systemName: "arrow.down.circle.fill")
+                    .font(.system(size: 32))
+                    .foregroundStyle(.blue)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("发现新版本 \(update.version)")
+                        .font(.title2.bold())
+                    Text(update.title)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            ScrollView {
+                Text(update.notes.isEmpty ? "包含最新的功能改进和问题修复。" : update.notes)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+            }
+            .padding(12)
+            .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 10))
+            HStack {
+                Button("查看发布页") { model.openUpdateReleasePage() }
+                Spacer()
+                Button("稍后") { dismiss() }
+                Button("下载更新") { model.downloadAvailableUpdate() }
+                    .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(24)
+        .frame(width: 520, height: 360)
     }
 }
 

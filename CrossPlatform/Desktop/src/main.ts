@@ -3,6 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { watch, type UnwatchFn } from "@tauri-apps/plugin-fs";
 import { isEnabled, enable, disable } from "@tauri-apps/plugin-autostart";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { load } from "@tauri-apps/plugin-store";
 import "./styles.css";
 
@@ -33,6 +34,15 @@ type Doctor = {
   ollama: { available: boolean; models: string[] };
 };
 
+type UpdateInfo = {
+  current_version: string;
+  version: string;
+  title: string;
+  notes: string;
+  download_url: string;
+  release_url: string;
+};
+
 const defaultSettings: Settings = {
   watched: [],
   roots: [],
@@ -52,6 +62,8 @@ let suggestions: Suggestion[] = [];
 let selectedSource = "";
 let unwatchers: UnwatchFn[] = [];
 let doctor: Doctor | null = null;
+let availableUpdate: UpdateInfo | null = null;
+let checkingUpdate = false;
 let scanning = false;
 const pendingPaths = new Map<string, number>();
 
@@ -198,6 +210,30 @@ async function refreshDoctor(): Promise<void> {
   render();
 }
 
+async function checkForUpdate(manual = false): Promise<void> {
+  if (checkingUpdate || !inTauri) return;
+  checkingUpdate = true;
+  let succeeded = false;
+  try {
+    availableUpdate = await invoke<UpdateInfo | null>("check_for_update");
+    succeeded = true;
+  } catch {
+    if (manual) alert("暂时无法检查更新，请稍后重试");
+  } finally {
+    checkingUpdate = false;
+    render();
+    if (manual && succeeded) {
+      if (availableUpdate) (document.querySelector("#update-dialog") as HTMLDialogElement)?.showModal();
+      else alert("当前已经是最新版本");
+    }
+  }
+}
+
+async function downloadUpdate(): Promise<void> {
+  if (!availableUpdate) return;
+  await openUrl(availableUpdate.download_url);
+}
+
 async function toggleAutostart(checked: boolean): Promise<void> {
   checked ? await enable() : await disable();
   settings.launchAtLogin = await isEnabled();
@@ -244,13 +280,17 @@ function appView(): string {
       <div class="queue">${suggestions.map(item => `<button class="queue-item ${item.source === selectedSource ? "selected" : ""}" data-source="${escapeHtml(item.source)}"><strong>${escapeHtml(basename(item.source))}</strong><span>→ ${escapeHtml(basename(item.destination))}</span></button>`).join("")}</div>
       <div class="sidebar-bottom"><button class="nav" id="scan">↻　${scanning ? "扫描中…" : "扫描现有文件"}</button><button class="nav" id="settings">⚙　设置</button></div>
     </aside>
-    <main class="workspace"><div class="topbar"><span class="status-dot"></span><span>后台监听中</span><button class="icon-button" id="refresh-doctor" title="检查增强功能">✦</button></div>${detailView(selected)}</main>
+    <main class="workspace"><div class="topbar"><span class="status-dot"></span><span>后台监听中</span>${availableUpdate ? `<button class="update-badge" id="show-update" title="下载 ${escapeHtml(availableUpdate.version)}"><i></i>新版本</button>` : ""}<button class="icon-button" id="refresh-doctor" title="检查增强功能">✦</button></div>${detailView(selected)}</main>
     <dialog id="settings-dialog"><form method="dialog"><header><h2>设置</h2><button value="close" aria-label="关闭">×</button></header>
       <label>监听文件夹</label><div class="settings-list">${settings.watched.map(path => `<span>${escapeHtml(path)}<button type="button" data-remove-watch="${escapeHtml(path)}">移除</button></span>`).join("")}</div><button type="button" class="secondary" id="settings-add-watch">添加…</button>
       <label>归档根目录</label><div class="settings-list">${settings.roots.map(path => `<span>${escapeHtml(path)}<button type="button" data-remove-root="${escapeHtml(path)}">移除</button></span>`).join("")}</div><button type="button" class="secondary" id="settings-add-root">添加…</button>
       <label class="toggle"><input type="checkbox" id="autostart" ${settings.launchAtLogin ? "checked" : ""}> 登录系统时启动</label>
       <div class="enhancement"><strong>高级识别</strong><span>${doctor?.ollama.available ? `Ollama 已连接${doctor.ollama.models.length ? ` · ${doctor.ollama.models.length} 个模型` : ""}` : "Ollama 未连接（可选）"}</span><span>PDF ${doctor?.pdf ? "可用" : "基础模式"} · OCR ${doctor?.ocr ? "可用" : "未安装"}</span></div>
-      <div class="dialog-actions"><button type="button" class="secondary" id="reindex">更新文件夹主题</button><button class="primary" value="close">完成</button></div>
+      <div class="dialog-actions"><div><button type="button" class="secondary" id="reindex">更新文件夹主题</button><button type="button" class="ghost compact" id="check-update">${checkingUpdate ? "检查中…" : "检查更新"}</button></div><button class="primary" value="close">完成</button></div>
+    </form></dialog>
+    <dialog id="update-dialog"><form method="dialog"><header><div><p class="eyebrow">UPDATE AVAILABLE</p><h2>发现新版本 ${availableUpdate ? escapeHtml(availableUpdate.version) : ""}</h2></div><button value="close" aria-label="关闭">×</button></header>
+      <p class="update-title">${availableUpdate ? escapeHtml(availableUpdate.title) : ""}</p><div class="update-notes">${availableUpdate ? escapeHtml(availableUpdate.notes || "包含最新的功能改进和问题修复。") : ""}</div>
+      <div class="dialog-actions"><button type="button" class="ghost" id="release-page">查看发布页</button><button type="button" class="primary" id="download-update">下载更新</button></div>
     </form></dialog>
   </div>`;
 }
@@ -278,6 +318,12 @@ function render(): void {
   document.querySelector("#confirm")?.addEventListener("click", () => void confirmSelected());
   document.querySelector("#dismiss")?.addEventListener("click", dismissSelected);
   document.querySelector("#refresh-doctor")?.addEventListener("click", () => void refreshDoctor());
+  document.querySelector("#show-update")?.addEventListener("click", () => (document.querySelector("#update-dialog") as HTMLDialogElement)?.showModal());
+  document.querySelector("#check-update")?.addEventListener("click", () => void checkForUpdate(true));
+  document.querySelector("#download-update")?.addEventListener("click", () => void downloadUpdate());
+  document.querySelector("#release-page")?.addEventListener("click", () => {
+    if (availableUpdate) void openUrl(availableUpdate.release_url);
+  });
   document.querySelector("#settings")?.addEventListener("click", () => {
     (document.querySelector("#settings-dialog") as HTMLDialogElement)?.showModal();
     if (!doctor) void refreshDoctor();
@@ -294,3 +340,4 @@ if (settings.completedWelcome) {
   await startWatchers();
   void refreshDoctor();
 }
+if (inTauri) void checkForUpdate();

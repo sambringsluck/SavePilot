@@ -195,6 +195,25 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            Section("软件更新") {
+                HStack {
+                    if let update = model.availableUpdate {
+                        Label("新版本 \(update.version) 可用", systemImage: "arrow.down.circle.fill")
+                            .foregroundStyle(.blue)
+                        Spacer()
+                        Button("下载") { model.downloadAvailableUpdate() }
+                    } else {
+                        Text(model.updateCheckStatus.isEmpty ? "自动检查 GitHub Release" : model.updateCheckStatus)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button(model.updateCheckRunning ? "检查中…" : "检查更新") {
+                            Task { await model.checkForUpdates(manual: true) }
+                        }
+                        .disabled(model.updateCheckRunning)
+                    }
+                }
+            }
         }
         .formStyle(.grouped)
         .padding()
@@ -270,6 +289,9 @@ struct MenuBarView: View {
             Button("撤销上次移动") { model.undoLastMove() }
                 .disabled(model.moveHistory.isEmpty)
             SettingsLink { Text("设置…") }
+            if let update = model.availableUpdate {
+                Button("下载新版本 \(update.version)") { model.downloadAvailableUpdate() }
+            }
             Divider()
             Button("退出 SavePilot") { NSApplication.shared.terminate(nil) }
         }

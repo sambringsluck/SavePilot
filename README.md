@@ -29,6 +29,8 @@ open dist/SavePilot.app
 
 新的 Tauri 桌面版会将分类引擎打包进安装程序，普通用户无需安装 Python。GitHub Actions 会分别生成 Windows 安装程序、Linux AppImage/软件包和跨平台 macOS 构建。当前可从源码构建：
 
+桌面版启动后会静默检查 GitHub Release；只有发现更高版本时才显示“新版本”徽标，用户确认后再下载当前系统对应的安装包。设置中也可以随时手动检查。
+
 ```bash
 cd CrossPlatform
 python -m pip install . pyinstaller

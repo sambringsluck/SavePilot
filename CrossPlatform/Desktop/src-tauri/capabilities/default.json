@@ -7,6 +7,12 @@
     "core:default",
     "dialog:default",
     "notification:default",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        { "url": "https://github.com/sambringsluck/SavePilot/**" }
+      ]
+    },
     "store:default",
     "fs:allow-watch",
     "fs:allow-unwatch",

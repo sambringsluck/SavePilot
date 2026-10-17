@@ -37,7 +37,8 @@ struct SavePilotSelfTest {
         try testFolderRelocationAndUndo()
         try testFileNameSuggestionAndRename()
         try testSensitiveContentRedactionAndNaming()
-        print("SavePilot self-test: 30/30 passed")
+        try testReleaseUpdateOrdering()
+        print("SavePilot self-test: 31/31 passed")
     }
 
     private static func testExistingFolderSuggestion() throws {
@@ -884,6 +885,13 @@ struct SavePilotSelfTest {
             academic: nil
         )?.fileName == "敏感账号凭证_请勿分享.docx"
         else { throw SelfTestError.failed("sensitive credential filename suggestion") }
+    }
+
+    private static func testReleaseUpdateOrdering() throws {
+        guard UpdateChecker.isNewer(candidate: "v1.2.0-preview.4", than: "v1.2.0-preview.3"),
+              !UpdateChecker.isNewer(candidate: "v1.2.0-preview.4", than: "v1.2.0-preview.4"),
+              UpdateChecker.isNewer(candidate: "v1.2.0-preview.4", than: "v1.2.0")
+        else { throw SelfTestError.failed("release update ordering") }
     }
 
     private static func temporaryDirectory() throws -> URL {

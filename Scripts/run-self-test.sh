@@ -22,6 +22,7 @@ swiftc \
   Sources/SavePilot/FolderAuditEngine.swift \
   Sources/SavePilot/FileMover.swift \
   Sources/SavePilot/FolderMonitor.swift \
+  Sources/SavePilot/UpdateChecker.swift \
   Scripts/self-test.swift \
   -o "$test_binary"
 "$test_binary"
