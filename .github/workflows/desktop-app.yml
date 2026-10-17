@@ -87,4 +87,25 @@ jobs:
           gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || \
             gh release create "$GITHUB_REF_NAME" --generate-notes --title "SavePilot $GITHUB_REF_NAME" "${release_flags[@]}" || \
             gh release view "$GITHUB_REF_NAME" >/dev/null
-          find release-assets -type f -print0 | xargs -0 gh release upload "$GITHUB_REF_NAME" --clobber
+          mapfile -d '' assets < <(find release-assets -type f -print0)
+          if (( ${#assets[@]} == 0 )); then
+            echo "No installer assets were downloaded."
+            exit 1
+          fi
+
+          for asset in "${assets[@]}"; do
+            echo "Uploading $(basename "$asset")"
+            uploaded=false
+            for attempt in 1 2 3; do
+              if gh release upload "$GITHUB_REF_NAME" "$asset" --clobber; then
+                uploaded=true
+                break
+              fi
+              echo "Upload attempt $attempt failed for $(basename "$asset")."
+              sleep 5
+            done
+            if [[ "$uploaded" != true ]]; then
+              echo "Failed to upload $asset after 3 attempts."
+              exit 1
+            fi
+          done
