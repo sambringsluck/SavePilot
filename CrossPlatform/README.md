@@ -1,8 +1,24 @@
 # SavePilot Cross-Platform
 
-This package brings SavePilot's local, confirmation-first workflow to Windows, Linux, and macOS with Python 3.10+. It includes a CLI, polling watcher, folder-content index, and Tk review window. The original Swift app remains the richest macOS build because OCR, Quick Look, PDFKit, Accessibility save-panel observation, and Apple models are platform APIs.
+This directory contains both the installable Tauri desktop app and the Python classification engine used by Windows, Linux, and macOS. The desktop app bundles the engine, so end users do not need Python. The CLI and Tk window remain available for development and automation. The original Swift app remains the richest macOS build because OCR, Quick Look, PDFKit, Accessibility save-panel observation, and Apple models are platform APIs.
 
-## Install
+## Installable desktop app
+
+Tagged releases are built on each operating system and published through GitHub Releases. The app includes first-run folder selection, a review queue, editable destinations and filenames, system notifications, launch-at-login, a tray icon, local capability checks, and confirmation-only moves.
+
+To build it locally, install Node.js, current stable Rust, Python 3.10+, and the platform prerequisites listed by Tauri, then run:
+
+```sh
+python -m pip install . pyinstaller
+python Desktop/scripts/build_sidecar.py
+cd Desktop
+npm ci
+npm run tauri build
+```
+
+The generated installers are under `Desktop/src-tauri/target/release/bundle/`.
+
+## Python GUI / CLI install
 
 Linux:
 

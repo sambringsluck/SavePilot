@@ -1,0 +1,82 @@
+name: Cross-platform desktop app
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: SavePilot-Windows
+          - os: ubuntu-22.04
+            artifact: SavePilot-Linux
+          - os: macos-latest
+            artifact: SavePilot-CrossPlatform-macOS
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: CrossPlatform/Desktop/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - name: Test classification engine
+        working-directory: CrossPlatform
+        env:
+          PYTHONPATH: src
+        run: python -m unittest discover -s tests -v
+      - name: Build bundled classification engine
+        working-directory: CrossPlatform
+        run: |
+          python -m pip install ".[full]" pyinstaller
+          python Desktop/scripts/build_sidecar.py
+      - name: Install desktop dependencies
+        working-directory: CrossPlatform/Desktop
+        run: npm ci
+      - name: Build installers
+        working-directory: CrossPlatform/Desktop
+        run: npm run tauri build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          if-no-files-found: error
+          path: |
+            CrossPlatform/Desktop/src-tauri/target/release/bundle/**/*.exe
+            CrossPlatform/Desktop/src-tauri/target/release/bundle/**/*.msi
+            CrossPlatform/Desktop/src-tauri/target/release/bundle/**/*.AppImage
+            CrossPlatform/Desktop/src-tauri/target/release/bundle/**/*.deb
+            CrossPlatform/Desktop/src-tauri/target/release/bundle/**/*.rpm
+            CrossPlatform/Desktop/src-tauri/target/release/bundle/**/*.dmg
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+      - name: Publish installers to tagged release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: find release-assets -type f -print0 | xargs -0 gh release upload "$GITHUB_REF_NAME" --clobber

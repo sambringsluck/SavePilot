@@ -274,6 +274,22 @@ def _contains(signal: str, evidence: str, token_set: set[str]) -> bool:
 def classify_subject(title: str, body: str) -> tuple[str, float, list[str]] | None:
     title_l, body_l = title.lower(), body.lower()
     title_tokens, body_tokens = set(tokens(title_l)), set(tokens(body_l))
+    title_has_subject = any(
+        _contains(alias, title_l, title_tokens)
+        for aliases, _ in SUBJECTS.values()
+        for alias in aliases
+    )
+    body_subject_groups = sum(
+        1
+        for aliases, keywords in SUBJECTS.values()
+        if any(_contains(alias, body_l, body_tokens) for alias in aliases)
+        or sum(_contains(keyword, body_l, body_tokens) for keyword in keywords) >= 2
+    )
+    # Taxonomies, product documentation and course catalogues often enumerate many
+    # disciplines. Without a subject signal in the title, that list is not evidence
+    # that the document itself belongs to the first or most frequently named subject.
+    if not title_has_subject and body_subject_groups >= 3:
+        return None
     ranked: list[tuple[str, float, list[str], bool, bool]] = []
     for subject, (aliases, keywords) in SUBJECTS.items():
         score, hits, title_alias, body_alias = 0.0, set(), False, False

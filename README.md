@@ -2,9 +2,10 @@
 
 [![macOS app](https://github.com/sambringsluck/SavePilot/actions/workflows/macos-app.yml/badge.svg)](https://github.com/sambringsluck/SavePilot/actions/workflows/macos-app.yml)
 [![Cross-platform core](https://github.com/sambringsluck/SavePilot/actions/workflows/cross-platform.yml/badge.svg)](https://github.com/sambringsluck/SavePilot/actions/workflows/cross-platform.yml)
+[![Desktop app](https://github.com/sambringsluck/SavePilot/actions/workflows/desktop-app.yml/badge.svg)](https://github.com/sambringsluck/SavePilot/actions/workflows/desktop-app.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-SavePilot 是一个本地优先的智能保存与文件归类工具：它监测新文件写入，理解文件内容和你已有的目录结构，给出存放与命名建议；只有你确认后才会创建目录、移动或重命名。macOS 提供原生 SwiftUI 应用；Windows、Linux 及 macOS 也可使用 `CrossPlatform/` 中的 Python GUI/CLI。
+SavePilot 是一个本地优先的智能保存与文件归类工具：它监测新文件写入，理解文件内容和你已有的目录结构，给出存放与命名建议；只有你确认后才会创建目录、移动或重命名。macOS 提供原生 SwiftUI 应用；Windows、Linux 和 macOS 的新跨平台桌面 App 位于 `CrossPlatform/Desktop/`，另保留 Python GUI/CLI 供开发与自动化使用。
 
 > 当前是开发者预览版。核心整理流程、权限检测、安全移动与回归测试已可用；面向普通消费者的 macOS 免警告安装包仍需要 Apple Developer ID 签名与公证。
 
@@ -26,7 +27,18 @@ open dist/SavePilot.app
 
 ## Windows / Linux
 
-跨平台版需要 Python 3.10+，提供本地文件夹索引、稳定文件监测、Tk 确认界面、OpenXML 解析，以及可选 PDF/OCR 增强：
+新的 Tauri 桌面版会将分类引擎打包进安装程序，普通用户无需安装 Python。GitHub Actions 会分别生成 Windows 安装程序、Linux AppImage/软件包和跨平台 macOS 构建。当前可从源码构建：
+
+```bash
+cd CrossPlatform
+python -m pip install . pyinstaller
+python Desktop/scripts/build_sidecar.py
+cd Desktop
+npm ci
+npm run tauri build
+```
+
+旧版 Python GUI/CLI 仍可单独安装，适合脚本和开发调试：
 
 ```bash
 cd CrossPlatform

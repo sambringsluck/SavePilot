@@ -5,6 +5,12 @@ dist-cross-platform/
 CrossPlatform/build/
 CrossPlatform/src/*.egg-info/
 CrossPlatform/**/__pycache__/
+CrossPlatform/Desktop/node_modules/
+CrossPlatform/Desktop/dist/
+CrossPlatform/Desktop/.sidecar-build/
+CrossPlatform/Desktop/src-tauri/target/
+CrossPlatform/Desktop/src-tauri/binaries/*
+!CrossPlatform/Desktop/src-tauri/binaries/.gitkeep
 Training/__pycache__/
 DerivedData/
 *.xcuserstate

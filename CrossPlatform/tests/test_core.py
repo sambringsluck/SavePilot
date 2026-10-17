@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 
 from savepilot.core import (
@@ -13,9 +16,37 @@ from savepilot.core import (
     recommend,
     suggest_filename,
 )
+from savepilot.desktop_bridge import main as desktop_main
 
 
 class SavePilotCoreTests(unittest.TestCase):
+
+    def test_subject_taxonomy_is_not_classified_as_physics(self):
+        body = (
+            "SavePilot supports physics mechanics force momentum, mathematics calculus matrix, "
+            "economics supply demand, chemistry molecule reaction, biology cell genetics."
+        )
+        self.assertIsNone(classify_subject("README", body))
+
+    def test_desktop_bridge_analyze_returns_ui_payload(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            physics = root / "物理"
+            physics.mkdir()
+            (physics / "mechanics.txt").write_text("force energy momentum mechanics", encoding="utf-8")
+            source = root / "hw3.txt"
+            source.write_text("physics mechanics force momentum", encoding="utf-8")
+            output = StringIO()
+            with redirect_stdout(output):
+                status = desktop_main(["analyze", "--file", str(source), "--root", str(root)])
+            payload = json.loads(output.getvalue())
+            self.assertEqual(status, 0)
+            self.assertEqual(payload["source"], str(source.resolve()))
+            self.assertIn("summary", payload)
+            self.assertIn("signals", payload)
+            self.assertIn("changes_name", payload)
+            self.assertIn("actionable", payload)
+
     def test_physics_subject_and_filename(self):
         content = ExtractedContent(
             "AP Physics C: Mech-1 Homework #3 force motion energy momentum",
