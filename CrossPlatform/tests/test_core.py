@@ -13,6 +13,7 @@ from savepilot.core import (
     classify_subject,
     confirm_move,
     document_relationship,
+    extract,
     recommend,
     suggest_filename,
 )
@@ -27,6 +28,19 @@ class SavePilotCoreTests(unittest.TestCase):
             "economics supply demand, chemistry molecule reaction, biology cell genetics."
         )
         self.assertIsNone(classify_subject("README", body))
+
+    def test_large_markdown_uses_stratified_content_for_classification(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "questions.md"
+            source.write_text(
+                "# 题库\n" + "通用练习题与解答。" * 18_000
+                + "\n## 宏观经济学\n市场 供给 需求 通货膨胀 GDP 弹性 均衡 微观经济 宏观经济",
+                encoding="utf-8",
+            )
+            content = extract(source)
+            self.assertIn("layered long-text sample", content.signals)
+            self.assertIn("宏观经济学", content.text)
+            self.assertEqual(classify_subject(source.stem, content.text)[0], "经济学")
 
     def test_desktop_bridge_analyze_returns_ui_payload(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -106,6 +120,13 @@ class SavePilotCoreTests(unittest.TestCase):
             suggest_filename(Path("1009.docx"), content, None),
             "敏感账号凭证_请勿分享.docx",
         )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "1009.txt"
+            source.write_text(raw, encoding="utf-8")
+            result = recommend(source, [root], profiles=[])
+            self.assertEqual(Path(result.destination), root.resolve() / "敏感资料")
+            self.assertGreaterEqual(result.confidence, .99)
 
     def test_protected_project_folder_is_not_hijacked(self):
         with tempfile.TemporaryDirectory() as temporary:

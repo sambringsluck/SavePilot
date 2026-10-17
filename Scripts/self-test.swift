@@ -297,6 +297,15 @@ struct SavePilotSelfTest {
               !normalized.contains("irrelevant hidden token"),
               !normalized.contains("export: conversation")
         else { throw SelfTestError.failed("markdown exported conversation normalization") }
+
+        let longMarkdown = "# 题库\n" + String(repeating: "通用练习题与解答。", count: 18_000)
+            + "\n## 宏观经济学\n市场 供给 需求 通货膨胀 GDP 弹性 均衡 微观经济 宏观经济"
+        let sampled = ContentExtractor.representativeText(longMarkdown)
+        let match = AcademicSubjectClassifier.classify(title: "questions", body: sampled)
+        guard sampled.count <= 20_100,
+              sampled.contains("宏观经济学"),
+              match?.folderName == "经济学"
+        else { throw SelfTestError.failed("long markdown stratified content classification") }
     }
 
     private static func testEvidenceFusionAndAbstention() throws {
@@ -889,6 +898,34 @@ struct SavePilotSelfTest {
             academic: nil
         )?.fileName == "敏感账号凭证_请勿分享.docx"
         else { throw SelfTestError.failed("sensitive credential filename suggestion") }
+
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("1009.docx")
+        let wrongMemory = LearningStore.Recommendation(
+            destination: root.appendingPathComponent("adv_econ", isDirectory: true),
+            confidence: 0.99,
+            evidence: "two confirmations",
+            approvals: 2,
+            rejections: 0
+        )
+        let engine = SuggestionEngine()
+        guard let intent = engine.strongContentIntent(for: source, content: content),
+              intent.folderName == "敏感资料",
+              !engine.acceptsPersonalMemory(
+                  wrongMemory, academicMatch: nil, contentIntent: intent
+              )
+        else { throw SelfTestError.failed("sensitive intent must outrank personal memory") }
+        let suggestion = engine.suggest(
+            for: source,
+            content: content,
+            roots: [root],
+            allowCreatingFolder: true
+        )
+        guard suggestion.finalDestinationFolder.lastPathComponent == "敏感资料",
+              suggestion.createsFolder,
+              suggestion.confidence >= 0.99
+        else { throw SelfTestError.failed("sensitive content routing") }
     }
 
     private static func testReleaseUpdateOrdering() throws {

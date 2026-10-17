@@ -17,9 +17,9 @@
     <key>CFBundleShortVersionString</key>
 	<string>1.2.0</string>
     <key>CFBundleVersion</key>
-	<string>37</string>
+	<string>38</string>
     <key>SavePilotReleaseTag</key>
-    <string>v1.2.0-preview.5</string>
+    <string>v1.2.0-preview.6</string>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>LSMinimumSystemVersion</key>

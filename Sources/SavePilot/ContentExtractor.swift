@@ -66,12 +66,14 @@ enum ContentExtractor {
 
         if textExtensions.contains(ext), let rawText = readText(url) {
             if ["md", "markdown"].contains(ext) {
-                textParts.append(MarkdownContentNormalizer.normalize(rawText))
+                textParts.append(representativeText(MarkdownContentNormalizer.normalize(rawText)))
                 signals.append("Markdown正文")
+                if rawText.count > 24_000 { signals.append("长文本分层抽样") }
                 kind = "Markdown 文档"
             } else {
-                textParts.append(rawText)
+                textParts.append(representativeText(rawText))
                 signals.append("可读文本")
+                if rawText.count > 24_000 { signals.append("长文本分层抽样") }
             }
         } else if ext == "pdf", let result = await AdvancedExtractors.extractPDF(at: url) {
             textParts.append(result.text)
@@ -163,11 +165,28 @@ enum ContentExtractor {
     private static func readText(_ url: URL) -> String? {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? handle.close() }
-        let data = (try? handle.read(upToCount: 512_000)) ?? Data()
+        let data = (try? handle.read(upToCount: 4_000_000)) ?? Data()
         guard !data.isEmpty else { return nil }
-        return String(data: data, encoding: .utf8)
-            ?? String(data: data, encoding: .utf16)
-            ?? String(data: data, encoding: .isoLatin1)
+        if data.starts(with: [0xFF, 0xFE]) || data.starts(with: [0xFE, 0xFF]) {
+            return String(data: data, encoding: .utf16)
+        }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    static func representativeText(_ value: String, limit: Int = 20_000) -> String {
+        guard value.count > limit else { return value }
+        // Leave room for segment delimiters so final bounding never truncates the tail sample.
+        let windows = [(0.00, 5_200), (0.25, 3_400), (0.50, 3_800), (0.75, 3_400), (1.00, 3_400)]
+        let count = value.count
+        let parts = windows.map { position, length -> String in
+            let desiredStart = position == 1.0
+                ? max(0, count - length)
+                : min(max(0, Int(Double(count - length) * position)), count - length)
+            let start = value.index(value.startIndex, offsetBy: desiredStart)
+            let end = value.index(start, offsetBy: min(length, value.distance(from: start, to: value.endIndex)))
+            return String(value[start..<end])
+        }
+        return parts.joined(separator: "\n\n[分层抽样片段]\n\n")
     }
 
     private static func spotlightText(_ url: URL) -> String? {

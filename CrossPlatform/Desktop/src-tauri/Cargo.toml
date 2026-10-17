@@ -1,6 +1,6 @@
 [package]
 name = "savepilot-desktop"
-version = "1.2.5"
+version = "1.2.6"
 description = "SavePilot cross-platform desktop application"
 authors = ["SavePilot contributors"]
 edition = "2021"

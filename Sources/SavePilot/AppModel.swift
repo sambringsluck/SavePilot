@@ -600,6 +600,7 @@ final class AppModel: ObservableObject {
         let academicTopic = suggestionEngine.specificTopicMatch(
             for: url, content: content, profile: userProfile
         )
+        let contentIntent = suggestionEngine.strongContentIntent(for: url, content: content)
         let directProjectTopic = DocumentRelationshipEngine.specificTopicName(
             for: url, content: content
         )
@@ -608,7 +609,9 @@ final class AppModel: ObservableObject {
         }.value
         let retrievedMemory = learningStore.recommendation(for: url, content: content, roots: roots)
         let learned = retrievedMemory.flatMap {
-            suggestionEngine.acceptsPersonalMemory($0, academicMatch: academicTopic) ? $0 : nil
+            suggestionEngine.acceptsPersonalMemory(
+                $0, academicMatch: academicTopic, contentIntent: contentIntent
+            ) ? $0 : nil
         }
         let profiles = folderKnowledgeProfiles
         var knowledgeCandidate = learned == nil ? await Task.detached(priority: .userInitiated) {
@@ -660,6 +663,12 @@ final class AppModel: ObservableObject {
         }
         let strongTitleCategory = suggestionEngine.strongTitleCategoryName(for: url)
         let knowledge = knowledgeCandidate.flatMap { candidate in
+            if let contentIntent {
+                return suggestionEngine.destination(
+                    candidate.destination,
+                    matchesCategoryNamed: contentIntent.folderName
+                ) ? candidate : nil
+            }
             if let academicTopic {
                 if suggestionEngine.destination(
                     candidate.destination,
@@ -767,6 +776,11 @@ final class AppModel: ObservableObject {
             academicTopic: academicTopic,
             fallback: contentFallback
         )
+        suggestion = enforceContentIntentBoundary(
+            suggestion,
+            contentIntent: contentIntent,
+            fallback: contentFallback
+        )
         if let directProjectTopic, let root = roots.first?.standardizedFileURL {
             let target = root.appendingPathComponent(directProjectTopic, isDirectory: true)
             let exists = FileManager.default.fileExists(atPath: target.path)
@@ -819,6 +833,11 @@ final class AppModel: ObservableObject {
             suggestions[index] = enforceAcademicBoundary(
                 suggestions[index],
                 academicTopic: academicTopic,
+                fallback: contentFallback
+            )
+            suggestions[index] = enforceContentIntentBoundary(
+                suggestions[index],
+                contentIntent: contentIntent,
                 fallback: contentFallback
             )
         }
@@ -933,6 +952,31 @@ final class AppModel: ObservableObject {
             reason: "学科边界校验：正文以 \(Int(academicTopic.confidence * 100))% 置信度识别为“\(academicTopic.folderName)”，已拒绝冲突的“\(destinationTopic.folderName)”目录候选。\(fallback.reason)",
             summary: fallback.summary,
             confidence: academicTopic.confidence,
+            createsFolder: fallback.createsFolder,
+            detectedAt: fallback.detectedAt,
+            proposedFileName: fallback.proposedFileName
+        )
+    }
+
+    private func enforceContentIntentBoundary(
+        _ suggestion: FileSuggestion,
+        contentIntent: StrongContentIntent?,
+        fallback: FileSuggestion
+    ) -> FileSuggestion {
+        guard let contentIntent,
+              !engine.destination(
+                  suggestion.finalDestinationFolder,
+                  matchesCategoryNamed: contentIntent.folderName
+              )
+        else { return suggestion }
+        return FileSuggestion(
+            id: fallback.id,
+            source: fallback.source,
+            destinationFolder: fallback.destinationFolder,
+            proposedFolderName: fallback.proposedFolderName,
+            reason: "内容用途边界：以 \(Int(contentIntent.confidence * 100))% 置信度识别为“\(contentIntent.folderName)”（\(contentIntent.evidence.joined(separator: "、"))），已拒绝用途不兼容的目录候选。\(fallback.reason)",
+            summary: fallback.summary,
+            confidence: contentIntent.confidence,
             createsFolder: fallback.createsFolder,
             detectedAt: fallback.detectedAt,
             proposedFileName: fallback.proposedFileName

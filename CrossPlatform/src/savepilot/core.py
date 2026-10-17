@@ -132,7 +132,7 @@ class DocumentRelationship:
     evidence: list[str]
 
 
-def _read_limited(path: Path, limit: int = 512_000) -> str:
+def _read_limited(path: Path, limit: int = 4_000_000) -> str:
     data = path.read_bytes()[:limit]
     for encoding in ("utf-8", "utf-16", "latin-1"):
         try:
@@ -140,6 +140,18 @@ def _read_limited(path: Path, limit: int = 512_000) -> str:
         except UnicodeError:
             continue
     return ""
+
+
+def _representative_text(value: str, limit: int = 20_000) -> str:
+    if len(value) <= limit:
+        return value
+    # Reserve part of the limit for delimiters so the final bound keeps the tail sample.
+    windows = ((0.00, 5200), (0.25, 3400), (0.50, 3800), (0.75, 3400), (1.00, 3400))
+    parts: list[str] = []
+    for position, length in windows:
+        start = max(0, len(value) - length) if position == 1.0 else int((len(value) - length) * position)
+        parts.append(value[start:start + length])
+    return "\n\n[layered sample]\n\n".join(parts)
 
 
 def _strip_markup(value: str) -> str:
@@ -228,6 +240,9 @@ def extract(path: Path) -> ExtractedContent:
             if suffix in {".md", ".markdown", ".html", ".htm"}:
                 text = _strip_markup(text)
             signals.append("text")
+            if len(text) > 24_000:
+                text = _representative_text(text)
+                signals.append("layered long-text sample")
         elif suffix in {".docx", ".pptx", ".xlsx"}:
             text = _extract_openxml(path)
             signals.append("OpenXML")
@@ -245,7 +260,7 @@ def extract(path: Path) -> ExtractedContent:
         text = f"{path.stem} {suffix} {kind}"
         signals.append("metadata fallback")
     text, sensitive = _sanitize_sensitive(text)
-    text = text[:20_000]
+    text = _representative_text(text)[:20_000]
     if sensitive:
         signals.append("敏感凭证值已隐藏")
         summary = "检测到敏感账号凭证或会话令牌；具体值已自动隐藏。请勿分享，并考虑撤销相关会话。"
@@ -274,22 +289,6 @@ def _contains(signal: str, evidence: str, token_set: set[str]) -> bool:
 def classify_subject(title: str, body: str) -> tuple[str, float, list[str]] | None:
     title_l, body_l = title.lower(), body.lower()
     title_tokens, body_tokens = set(tokens(title_l)), set(tokens(body_l))
-    title_has_subject = any(
-        _contains(alias, title_l, title_tokens)
-        for aliases, _ in SUBJECTS.values()
-        for alias in aliases
-    )
-    body_subject_groups = sum(
-        1
-        for aliases, keywords in SUBJECTS.values()
-        if any(_contains(alias, body_l, body_tokens) for alias in aliases)
-        or sum(_contains(keyword, body_l, body_tokens) for keyword in keywords) >= 2
-    )
-    # Taxonomies, product documentation and course catalogues often enumerate many
-    # disciplines. Without a subject signal in the title, that list is not evidence
-    # that the document itself belongs to the first or most frequently named subject.
-    if not title_has_subject and body_subject_groups >= 3:
-        return None
     ranked: list[tuple[str, float, list[str], bool, bool]] = []
     for subject, (aliases, keywords) in SUBJECTS.items():
         score, hits, title_alias, body_alias = 0.0, set(), False, False
@@ -434,6 +433,22 @@ def specific_project_topic(path: Path, content: ExtractedContent) -> str | None:
     return None
 
 
+def strong_content_intent(content: ExtractedContent) -> tuple[str, float] | None:
+    if "敏感凭证值已隐藏" in content.signals:
+        return "敏感资料", .99
+    evidence = f"{content.summary} {content.text[:8000]}".casefold()
+    descriptors = [
+        ("合同与法律", ["agreement", "contract", "parties", "signature", "legal terms", "合同", "协议", "签署", "当事人"], 3),
+        ("医疗", ["diagnosis", "patient", "hospital", "prescription", "medical record", "诊断", "患者", "医院", "处方", "病历"], 3),
+        ("收据", ["receipt", "purchase", "paid", "amount", "merchant", "收据", "小票", "已付", "商户"], 3),
+        ("旅行", ["itinerary", "flight", "hotel", "booking", "visa", "行程", "航班", "酒店", "预订", "签证"], 4),
+    ]
+    ranked = sorted(((name, [term for term in terms if term in evidence], minimum) for name, terms, minimum in descriptors), key=lambda item: len(item[1]), reverse=True)
+    if not ranked or len(ranked[0][1]) < ranked[0][2] or (len(ranked) > 1 and len(ranked[0][1]) == len(ranked[1][1])):
+        return None
+    return ranked[0][0], min(.96, .78 + len(ranked[0][1]) * .04)
+
+
 def build_profile(folder: Path, limit: int = 18) -> FolderProfile | None:
     try:
         files = [item for item in folder.iterdir() if item.is_file() and item.suffix.lower() in PROFILE_EXTENSIONS and item.stat().st_size <= 80_000_000]
@@ -538,6 +553,16 @@ def recommend(path: Path, roots: list[Path], profiles: list[FolderProfile] | Non
     destination: Path | None = None
     reason = ""
     creates_folder = False
+
+    intent = strong_content_intent(content)
+    if intent:
+        destination = roots[0].expanduser().resolve() / intent[0]
+        proposed = suggest_filename(path, content, subject) or path.name
+        return Suggestion(
+            str(path), str(destination), proposed,
+            f"强内容用途识别为“{intent[0]}”，优先于普通目录相似度",
+            intent[1], not destination.exists(),
+        )
 
     project_topic = specific_project_topic(path, content)
     if project_topic:

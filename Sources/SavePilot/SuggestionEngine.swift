@@ -1,6 +1,12 @@
 import Foundation
 import NaturalLanguage
 
+struct StrongContentIntent: Sendable {
+    let folderName: String
+    let confidence: Double
+    let evidence: [String]
+}
+
 struct SuggestionEngine {
     struct Category {
         let folder: String
@@ -9,6 +15,7 @@ struct SuggestionEngine {
     }
 
     private let categories: [Category] = [
+        .init(folder: "敏感资料", aliases: ["credentials", "secrets", "private credentials", "凭证", "密码", "密钥"], keywords: ["password", "access token", "session token", "api key", "client secret", "authorization", "密码", "令牌", "密钥", "凭证"]),
         .init(folder: "工作", aliases: ["work", "business", "office", "interview", "resume", "cv", "项目", "客户", "面试", "简历"], keywords: ["project", "meeting", "report", "proposal", "client", "interview", "resume", "工作", "会议", "报告", "方案", "客户", "面试", "简历"]),
         .init(folder: "财务", aliases: ["finance", "financial", "money", "bank", "portfolio", "税务", "金融", "投资"], keywords: ["bank", "statement", "tax", "budget", "finance", "financial", "invoice", "portfolio", "investment", "stock", "bond", "银行", "税", "预算", "账单", "发票", "金融", "投资", "股票", "债券", "资产配置"]),
         .init(folder: "收据", aliases: ["receipts", "receipt", "报销"], keywords: ["receipt", "purchase", "order", "paid", "total", "收据", "小票", "订单", "付款", "报销"]),
@@ -41,7 +48,10 @@ struct SuggestionEngine {
         // “model”, “article” or “student” caused unrelated template folders to
         // win with misleading confidence.
         let retrievalEvidence = source.deletingPathExtension().lastPathComponent.lowercased()
-        let category = bestCategory(for: source, evidence: evidence)
+        let contentIntent = strongContentIntent(for: source, content: content)
+        let category = contentIntent.flatMap { intent in
+            categories.first(where: { $0.folder == intent.folderName })
+        } ?? bestCategory(for: source, evidence: evidence)
         let strongTitleCategory = strongTitleCategoryName(for: source)
         let academic = (strongTitleCategory == nil || strongTitleCategory == "学习")
             ? AcademicSubjectClassifier.classify(source: source, content: content, profile: profile)
@@ -75,8 +85,11 @@ struct SuggestionEngine {
         }
 
         let confidence = max(
-            confidenceFor(category: category, evidence: evidence, matchedExisting: existing != nil),
-            academic?.confidence ?? 0
+            contentIntent?.confidence ?? 0,
+            max(
+                confidenceFor(category: category, evidence: evidence, matchedExisting: existing != nil),
+                academic?.confidence ?? 0
+            )
         )
         return FileSuggestion(
             id: UUID(),
@@ -92,6 +105,9 @@ struct SuggestionEngine {
     }
 
     func topicName(for source: URL, content: ExtractedContent, profile: UserProfileSnapshot? = nil) -> String {
+        if let intent = strongContentIntent(for: source, content: content) {
+            return intent.folderName
+        }
         if let academic = AcademicSubjectClassifier.classify(source: source, content: content, profile: profile) {
             return academic.folderName
         }
@@ -159,9 +175,13 @@ struct SuggestionEngine {
 
     func acceptsPersonalMemory(
         _ recommendation: LearningStore.Recommendation,
-        academicMatch: AcademicSubjectMatch?
+        academicMatch: AcademicSubjectMatch?,
+        contentIntent: StrongContentIntent? = nil
     ) -> Bool {
         guard recommendation.approvals > recommendation.rejections else { return false }
+        if let contentIntent {
+            return destination(recommendation.destination, matchesCategoryNamed: contentIntent.folderName)
+        }
         guard let academicMatch, academicMatch.confidence >= 0.82 else {
             return true
         }
@@ -177,6 +197,34 @@ struct SuggestionEngine {
         return true
     }
 
+    func strongContentIntent(for source: URL, content: ExtractedContent) -> StrongContentIntent? {
+        if content.signals.contains("敏感凭证值已隐藏") {
+            return StrongContentIntent(
+                folderName: "敏感资料", confidence: 0.99,
+                evidence: ["检测到已脱敏的账号凭证或会话令牌"]
+            )
+        }
+        let evidence = "\(content.summary) \(String(content.text.prefix(8_000)))".lowercased()
+        let descriptors: [(folder: String, terms: [String], minimum: Int)] = [
+            ("合同与法律", ["agreement", "contract", "parties", "signature", "legal terms", "合同", "协议", "签署", "当事人"], 3),
+            ("医疗", ["diagnosis", "patient", "hospital", "prescription", "medical record", "诊断", "患者", "医院", "处方", "病历"], 3),
+            ("收据", ["receipt", "purchase", "paid", "amount", "merchant", "收据", "小票", "已付", "商户"], 3),
+            ("旅行", ["itinerary", "flight", "hotel", "booking", "visa", "行程", "航班", "酒店", "预订", "签证"], 4)
+        ]
+        let ranked = descriptors.map { descriptor in
+            (descriptor, descriptor.terms.filter { containsSignal($0, in: evidence) })
+        }.sorted { $0.1.count > $1.1.count }
+        guard let best = ranked.first,
+              best.1.count >= best.0.minimum,
+              best.1.count > (ranked.dropFirst().first?.1.count ?? 0)
+        else { return nil }
+        return StrongContentIntent(
+            folderName: best.0.folder,
+            confidence: min(0.96, 0.78 + Double(best.1.count) * 0.04),
+            evidence: Array(best.1.prefix(6))
+        )
+    }
+
     /// Returns a bounded, reusable category rather than a one-off folder named
     /// after the file. A title keyword is sufficient; otherwise the body needs
     /// at least two independent category signals. Format categories are stable
@@ -186,6 +234,9 @@ struct SuggestionEngine {
         content: ExtractedContent,
         profile: UserProfileSnapshot? = nil
     ) -> String? {
+        if let intent = strongContentIntent(for: source, content: content) {
+            return intent.folderName
+        }
         let evidence = "\(source.lastPathComponent) \(content.summary) \(content.entities.joined(separator: " ")) \(String(content.text.prefix(4_000)))".lowercased()
         let title = source.deletingPathExtension().lastPathComponent.lowercased()
         if let strongTitle = strongTitleCategoryName(for: source), strongTitle != "学习" {

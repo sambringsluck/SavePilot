@@ -11,7 +11,7 @@ use tauri_plugin_shell::ShellExt;
 const RELEASES_API: &str = "https://api.github.com/repos/sambringsluck/SavePilot/releases?per_page=12";
 // Installer ecosystems impose stricter package-version syntax than GitHub
 // prerelease tags. Keep update identity independent from MSI/RPM metadata.
-const CURRENT_RELEASE_VERSION: &str = "1.2.0-preview.5";
+const CURRENT_RELEASE_VERSION: &str = "1.2.0-preview.6";
 
 #[derive(Deserialize)]
 struct ReleaseAsset {

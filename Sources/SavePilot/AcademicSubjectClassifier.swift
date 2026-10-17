@@ -78,7 +78,9 @@ enum AcademicSubjectClassifier {
     ) -> AcademicSubjectMatch? {
         classify(
             title: source.deletingPathExtension().lastPathComponent,
-            body: "\(content.summary) \(content.entities.joined(separator: " ")) \(String(content.text.prefix(12_000)))",
+            // ContentExtractor has already bounded and stratified this text.
+            // Consuming the full sample preserves middle/tail evidence in long files.
+            body: "\(content.summary) \(content.entities.joined(separator: " ")) \(content.text)",
             profile: profile
         )
     }
