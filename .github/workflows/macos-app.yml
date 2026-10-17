@@ -23,6 +23,13 @@ jobs:
         run: |
           ditto -c -k --sequesterRsrc --keepParent dist/SavePilot.app SavePilot-macOS.zip
           shasum -a 256 SavePilot-macOS.zip > SavePilot-macOS.zip.sha256
+      - name: Verify packaged app
+        run: |
+          mkdir packaged-app
+          ditto -x -k SavePilot-macOS.zip packaged-app
+          test -x packaged-app/SavePilot.app/Contents/MacOS/SavePilot
+          codesign --verify --deep --strict packaged-app/SavePilot.app
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' packaged-app/SavePilot.app/Contents/Info.plist)" = "local.savepilot.app"
       - uses: actions/upload-artifact@v4
         with:
           name: SavePilot-macOS
@@ -33,4 +40,12 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" SavePilot-macOS.zip SavePilot-macOS.zip.sha256 --generate-notes --title "SavePilot $GITHUB_REF_NAME"
+        run: |
+          release_flags=()
+          if [[ "$GITHUB_REF_NAME" == *preview* || "$GITHUB_REF_NAME" == *beta* || "$GITHUB_REF_NAME" == *rc* ]]; then
+            release_flags+=(--prerelease)
+          fi
+          gh release create "$GITHUB_REF_NAME" SavePilot-macOS.zip SavePilot-macOS.zip.sha256 \
+            --generate-notes \
+            --title "SavePilot $GITHUB_REF_NAME" \
+            "${release_flags[@]}"

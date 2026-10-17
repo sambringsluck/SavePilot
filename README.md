@@ -8,6 +8,8 @@ SavePilot 是一个本地优先的智能保存与文件归类工具：它监测�
 
 > 当前是开发者预览版。核心整理流程、权限检测、安全移动与回归测试已可用；面向普通消费者的 macOS 免警告安装包仍需要 Apple Developer ID 签名与公证。
 
+预览安装包可从 [GitHub Releases](https://github.com/sambringsluck/SavePilot/releases) 下载。它会明确标记为 Pre-release；由于尚未接入 Apple Developer ID，首次打开仍可能出现 Gatekeeper 提示，升级构建后也可能需要重新授予辅助功能权限。
+
 ## 快速体验 macOS
 
 系统要求：macOS 14+，并安装 Xcode Command Line Tools。
