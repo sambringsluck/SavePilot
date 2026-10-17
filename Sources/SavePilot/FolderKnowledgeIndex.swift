@@ -393,7 +393,7 @@ enum FolderKnowledgeIndex {
     }
 
     static func buildProfile(folder: URL) async -> FolderKnowledgeProfile? {
-        let candidates = sampleFiles(in: folder, limit: 18)
+        let candidates = sampleFiles(in: folder, limit: 24)
         guard !candidates.isEmpty else { return nil }
         var documents: [(url: URL, counts: [String: Int])] = []
         var extensions: Set<String> = []

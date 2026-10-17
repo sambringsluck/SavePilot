@@ -44,6 +44,7 @@ final class AppModel: ObservableObject {
     @Published var fullDiskAccessGranted = false
     @Published var watchedFoldersReadable = false
     @Published var lastPermissionCheck: Date?
+    @Published var showWelcome = false
 
     private var monitor: FolderMonitor?
     private var savePanelObserver: SavePanelObserver?
@@ -55,9 +56,12 @@ final class AppModel: ObservableObject {
     private var pendingURLs: [(url: URL, allowExisting: Bool)] = []
     private var processingQueue = false
     private var recentContentByPath: [String: ExtractedContent] = [:]
+    private var hasStartedInitialAnalysis = false
+    private var relationshipScanTask: Task<Void, Never>?
 
     init() {
         loadSettings()
+        showWelcome = !defaults.bool(forKey: "didCompleteWelcome")
         learningSummary = learningStore.summary
         userProfileSummary = userProfileStore.snapshot.summary
         launchAtLogin = SMAppService.mainApp.status == .enabled
@@ -74,14 +78,8 @@ final class AppModel: ObservableObject {
         refreshPermissions()
         Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 600_000_000)
-            guard let self else { return }
-            let hadCachedProfiles = !self.folderKnowledgeProfiles.isEmpty
-            // A warm launch can classify immediately from the last good index while
-            // a refreshed snapshot is built in the background for future files.
-            if hadCachedProfiles, self.autoScanExisting { self.analyzeExistingFiles(limit: 12) }
-            await self.refreshFolderKnowledge()
-            await self.checkOllamaSetup()
-            if !hadCachedProfiles, self.autoScanExisting { self.analyzeExistingFiles(limit: 12) }
+            guard let self, !self.showWelcome else { return }
+            await self.startInitialAnalysis()
         }
     }
 
@@ -163,6 +161,24 @@ final class AppModel: ObservableObject {
         ))
     }
 
+    func completeWelcome() {
+        defaults.set(true, forKey: "didCompleteWelcome")
+        showWelcome = false
+        Task { await startInitialAnalysis() }
+    }
+
+    private func startInitialAnalysis() async {
+        guard !hasStartedInitialAnalysis else { return }
+        hasStartedInitialAnalysis = true
+        let hadCachedProfiles = !folderKnowledgeProfiles.isEmpty
+        // A warm launch can classify immediately from the last good index while
+        // a refreshed snapshot is built in the background for future files.
+        if hadCachedProfiles, autoScanExisting { analyzeExistingFiles(limit: 12) }
+        await refreshFolderKnowledge()
+        await checkOllamaSetup()
+        if !hadCachedProfiles, autoScanExisting { analyzeExistingFiles(limit: 12) }
+    }
+
     func copyPreSaveDestination() {
         guard let path = preSaveHint?.finalDestinationFolder.path else { return }
         NSPasteboard.general.clearContents()
@@ -219,33 +235,71 @@ final class AppModel: ObservableObject {
             return
         }
         // Relationship inference must not depend on queue order. Pre-read a
-        // broader, bounded corpus before publishing the first suggestion.
-        let corpusLimit = min(160, max(safeLimit, 80))
-        let relationshipCorpus = Array(groups.flatMap { $0 }
-            .sorted { $0.modified > $1.modified }
-            .prefix(corpusLimit))
-        existingScanStatus = "发现 \(totalCount) 个现有文件，正在预读 \(relationshipCorpus.count) 个文件并建立关系图…"
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            for start in stride(from: 0, to: relationshipCorpus.count, by: 6) {
-                let chunk = Array(relationshipCorpus[start..<min(start + 6, relationshipCorpus.count)])
-                let missing = chunk.filter { self.recentContentByPath[$0.url.standardizedFileURL.path] == nil }
-                let extracted = await withTaskGroup(of: (String, ExtractedContent).self) { group in
-                    for candidate in missing {
-                        group.addTask {
-                            let value = await ContentExtractor.extract(from: candidate.url)
-                            return (candidate.url.standardizedFileURL.path, value)
-                        }
-                    }
-                    var values: [(String, ExtractedContent)] = []
-                    for await value in group { values.append(value) }
-                    return values
-                }
-                for (path, content) in extracted { self.recentContentByPath[path] = content }
+        // larger but bounded, root-balanced corpus before publishing the first
+        // suggestion. Mix recent and evenly-spaced historical files so one
+        // recent burst cannot redefine the user's whole relationship graph.
+        let corpusLimit = min(totalCount, min(240, max(160, safeLimit * 2)))
+        var corpus: [(url: URL, modified: Date)] = []
+        var corpusPaths = Set<String>()
+        let perGroupTarget = max(1, Int(ceil(Double(corpusLimit) / Double(max(1, groups.count)))))
+        var balancedGroups: [[(url: URL, modified: Date)]] = []
+        for group in groups where !group.isEmpty {
+            let target = min(group.count, perGroupTarget)
+            let recentCount = min(target, max(8, target / 2))
+            var sampled: [(url: URL, modified: Date)] = []
+            var sampledPaths = Set<String>()
+            for candidate in group.prefix(recentCount) {
+                if sampledPaths.insert(candidate.url.standardizedFileURL.path).inserted { sampled.append(candidate) }
             }
+            let historicalSlots = target - recentCount
+            if historicalSlots > 0 {
+                for slot in 0..<historicalSlots {
+                    let position = Int(
+                        (Double(slot + 1) / Double(historicalSlots + 1)) * Double(group.count - 1)
+                    )
+                    let candidate = group[position]
+                    if sampledPaths.insert(candidate.url.standardizedFileURL.path).inserted { sampled.append(candidate) }
+                }
+            }
+            balancedGroups.append(sampled)
+        }
+        let maximumDepth = balancedGroups.map(\.count).max() ?? 0
+        for depth in 0..<maximumDepth {
+            for sampled in balancedGroups where sampled.indices.contains(depth) {
+                let candidate = sampled[depth]
+                if corpusPaths.insert(candidate.url.standardizedFileURL.path).inserted { corpus.append(candidate) }
+            }
+        }
+        if corpus.count < corpusLimit {
+            for candidate in groups.flatMap({ $0 }).sorted(by: { $0.modified > $1.modified }) {
+                guard corpus.count < corpusLimit else { break }
+                if corpusPaths.insert(candidate.url.standardizedFileURL.path).inserted { corpus.append(candidate) }
+            }
+        }
+        let relationshipCorpus = Array(corpus.prefix(corpusLimit))
+        let immediateCorpus = Array(relationshipCorpus.prefix(min(96, relationshipCorpus.count)))
+        let enrichmentCorpus = Array(relationshipCorpus.dropFirst(immediateCorpus.count))
+        existingScanStatus = "发现 \(totalCount) 个现有文件，正在预读 \(immediateCorpus.count) 个文件并建立关系图…"
+        relationshipScanTask?.cancel()
+        relationshipScanTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.preloadRelationshipContent(immediateCorpus)
+            guard !Task.isCancelled else { return }
             self.trimRelationshipCorpus(keeping: Set(filesToQueue.map { $0.url.standardizedFileURL.path }))
-            self.existingScanStatus = "关系图已预热；已从 \(groups.count) 个入口均衡加入 \(filesToQueue.count) 个到分析队列"
+            self.existingScanStatus = enrichmentCorpus.isEmpty
+                ? "关系图已就绪；已从 \(groups.count) 个入口均衡加入 \(filesToQueue.count) 个到分析队列"
+                : "核心关系图已就绪；正在后台扩充到 \(relationshipCorpus.count) 个文件"
             for candidate in filesToQueue { self.enqueueFile(candidate.url, allowExisting: true) }
+            guard !enrichmentCorpus.isEmpty else { return }
+            await self.preloadRelationshipContent(enrichmentCorpus)
+            guard !Task.isCancelled else { return }
+            self.trimRelationshipCorpus(keeping: Set(filesToQueue.map { $0.url.standardizedFileURL.path }))
+            self.suggestions = RelatedFileConsensus.consolidate(
+                self.suggestions,
+                contents: self.recentContentByPath,
+                roots: self.effectiveDestinationURLs()
+            )
+            self.existingScanStatus = "关系图已扩充到 \(relationshipCorpus.count) 个文件；当前建议已重新校准"
         }
     }
 
@@ -721,17 +775,37 @@ final class AppModel: ObservableObject {
     }
 
     private func trimRelationshipCorpus(keeping protectedPaths: Set<String>) {
-        guard recentContentByPath.count > 240 else { return }
+        guard recentContentByPath.count > 360 else { return }
         let active = Set(suggestions.suffix(120).map { $0.source.standardizedFileURL.path })
             .union(protectedPaths)
         let retained = recentContentByPath.keys.sorted().filter { active.contains($0) }
         var result = Dictionary(uniqueKeysWithValues: retained.compactMap { path in
             recentContentByPath[path].map { (path, $0) }
         })
-        for path in recentContentByPath.keys.sorted() where result.count < 220 {
+        for path in recentContentByPath.keys.sorted() where result.count < 320 {
             if let content = recentContentByPath[path] { result[path] = content }
         }
         recentContentByPath = result
+    }
+
+    private func preloadRelationshipContent(_ candidates: [(url: URL, modified: Date)]) async {
+        for start in stride(from: 0, to: candidates.count, by: 6) {
+            guard !Task.isCancelled else { return }
+            let chunk = Array(candidates[start..<min(start + 6, candidates.count)])
+            let missing = chunk.filter { recentContentByPath[$0.url.standardizedFileURL.path] == nil }
+            let extracted = await withTaskGroup(of: (String, ExtractedContent).self) { group in
+                for candidate in missing {
+                    group.addTask {
+                        let value = await ContentExtractor.extract(from: candidate.url)
+                        return (candidate.url.standardizedFileURL.path, value)
+                    }
+                }
+                var values: [(String, ExtractedContent)] = []
+                for await value in group { values.append(value) }
+                return values
+            }
+            for (path, content) in extracted { recentContentByPath[path] = content }
+        }
     }
 
     private func sanitizeHierarchyConflict(
@@ -890,7 +964,7 @@ final class AppModel: ObservableObject {
         folderAuditRunning = true
         defer { folderAuditRunning = false }
 
-        let files = FolderAuditEngine.candidateEntries(in: folder, limit: 80)
+        let files = FolderAuditEngine.candidateEntries(in: folder, limit: 160)
         guard files.count >= 5 else {
             folderAuditStatus = "“\(folder.lastPathComponent)”中可分析的顶层文件或子文件夹不足 5 个。"
             return

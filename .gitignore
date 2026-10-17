@@ -10,6 +10,7 @@ DerivedData/
 *.xcuserstate
 xcuserdata/
 *.zip
+*.zip.sha256
 *.dSYM/
 Training/generated/
 

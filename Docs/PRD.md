@@ -132,6 +132,14 @@ Maintain a private, local-only golden set of user-approved cases such as physics
 - P2: app-specific integrations where a source application exposes a supported automation or extension API.
 - Delivered compatibility baseline: Python GUI/CLI, local indexing, polling monitor, OpenXML, optional PDF/OCR, and confirmation-safe moves on Windows/Linux/macOS.
 
+### Public beta release gate
+
+- Delivered: concise first-run explanation of watched folders, default destination, confirmation safety, and optional Accessibility permission.
+- Delivered: macOS and cross-platform CI, reproducible app archive, checksum, privacy policy, and security-reporting guidance.
+- Required before describing the macOS build as consumer-ready: Apple Developer ID signing and notarization, so Gatekeeper and Accessibility grants remain stable across updates.
+- Required before making production accuracy claims: one untouched, user-confirmed `T_real` evaluation and anonymized acceptance/rejection telemetry that stays local unless explicitly exported.
+- Recommended: screenshots or a short demo, tagged release notes, and a clean-machine installation test on the oldest supported macOS version.
+
 ## 11. Non-goals and platform limits
 
 SavePilot does not inject unsupported controls into every application's save dialog, bypass macOS privacy permissions, organize managed photo/music libraries internally, or promise semantic extraction from encrypted or corrupt files. Custom save windows and cloud-only editors may only be observable after their exported file reaches a watched directory.

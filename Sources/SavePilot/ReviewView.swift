@@ -42,6 +42,11 @@ struct ReviewView: View {
             }
         }
         .frame(minWidth: 820, minHeight: 520)
+        .sheet(isPresented: $model.showWelcome) {
+            WelcomeView()
+                .environmentObject(model)
+                .interactiveDismissDisabled()
+        }
         .onAppear { selectFirstIfNeeded() }
         .onChange(of: model.suggestions.map(\.id)) { _, _ in
             selectFirstIfNeeded()
@@ -88,6 +93,43 @@ struct ReviewView: View {
         if selectedSuggestionID == nil || !model.suggestions.contains(where: { $0.id == selectedSuggestionID }) {
             selectedSuggestionID = model.suggestions.first?.id
         }
+    }
+}
+
+private struct WelcomeView: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        VStack(spacing: 20) {
+            Image(nsImage: NSApplication.shared.applicationIconImage)
+                .resizable()
+                .frame(width: 76, height: 76)
+            Text("欢迎使用 SavePilot")
+                .font(.title2.bold())
+            VStack(alignment: .leading, spacing: 12) {
+                Label("监听桌面与下载", systemImage: "tray.and.arrow.down")
+                Label("默认归档到文稿，可在设置中更改", systemImage: "folder")
+                Label("任何移动都需要你确认", systemImage: "hand.raised")
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 24)
+
+            HStack {
+                Button(model.accessibilityGranted ? "辅助功能已开启" : "开启辅助功能") {
+                    if model.accessibilityGranted {
+                        model.refreshPermissions()
+                    } else {
+                        model.requestAccessibility()
+                    }
+                }
+                .disabled(model.accessibilityGranted)
+                Spacer()
+                Button("开始使用") { model.completeWelcome() }
+                    .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(28)
+        .frame(width: 460)
     }
 }
 
