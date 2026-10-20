@@ -1,6 +1,11 @@
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::{
+    collections::{HashSet, VecDeque},
+    fs,
+    path::{Path, PathBuf},
+};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -11,7 +16,7 @@ use tauri_plugin_shell::ShellExt;
 const RELEASES_API: &str = "https://api.github.com/repos/sambringsluck/SavePilot/releases?per_page=12";
 // Installer ecosystems impose stricter package-version syntax than GitHub
 // prerelease tags. Keep update identity independent from MSI/RPM metadata.
-const CURRENT_RELEASE_VERSION: &str = "1.2.0-preview.6";
+const CURRENT_RELEASE_VERSION: &str = "1.2.0-preview.7";
 
 #[derive(Deserialize)]
 struct ReleaseAsset {
@@ -113,6 +118,102 @@ async fn rebuild_index(app: AppHandle, roots: Vec<String>) -> Result<Value, Stri
 #[tauri::command]
 async fn engine_doctor(app: AppHandle) -> Result<Value, String> {
     engine_json(&app, vec!["doctor".into()]).await
+}
+
+fn normalized_path_term(value: &str) -> String {
+    value
+        .to_lowercase()
+        .replace('_', " ")
+        .replace('-', " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn path_match_score(query: &str, path: &Path) -> Option<i32> {
+    let query = normalized_path_term(query);
+    if query.len() < 2 {
+        return None;
+    }
+    let full = path.to_string_lossy();
+    let full_key = normalized_path_term(&full);
+    let leaf_key = path
+        .file_name()
+        .map(|value| normalized_path_term(&value.to_string_lossy()))
+        .unwrap_or_default();
+    let components: Vec<String> = path
+        .components()
+        .map(|value| normalized_path_term(&value.as_os_str().to_string_lossy()))
+        .collect();
+    if full_key == query || leaf_key == query {
+        Some(120)
+    } else if leaf_key.starts_with(&query) {
+        Some(108)
+    } else if leaf_key.contains(&query) {
+        Some(98)
+    } else if let Some(index) = components.iter().rposition(|value| value == &query) {
+        let descendants = components.len().saturating_sub(index + 1) as i32;
+        Some(94 - (descendants * 3).min(18))
+    } else if full_key.contains(&query) {
+        Some(82)
+    } else {
+        let tokens: HashSet<&str> = full_key.split_whitespace().collect();
+        let query_tokens: Vec<&str> = query.split_whitespace().collect();
+        query_tokens.iter().all(|value| tokens.contains(value)).then_some(70)
+    }
+}
+
+fn discover_matching_folders(query: &str, roots: &[String], limit: usize) -> Vec<String> {
+    let excluded: HashSet<&str> = [
+        ".git", ".build", "node_modules", "Library", "Applications", "Pods",
+        "DerivedData", "Caches", "Cache",
+    ]
+    .into_iter()
+    .collect();
+    let mut visited = HashSet::new();
+    let mut queue: VecDeque<(PathBuf, usize)> = roots
+        .iter()
+        .map(|value| (PathBuf::from(value), 0))
+        .collect();
+    let mut scored = Vec::new();
+    while let Some((folder, depth)) = queue.pop_front() {
+        if visited.len() >= 8_000 || !visited.insert(folder.clone()) {
+            continue;
+        }
+        if let Some(score) = path_match_score(query, &folder) {
+            scored.push((folder.clone(), score));
+        }
+        if depth >= 7 {
+            continue;
+        }
+        let Ok(entries) = fs::read_dir(&folder) else { continue };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') || excluded.contains(name.as_str()) {
+                continue;
+            }
+            let Ok(kind) = entry.file_type() else { continue };
+            if kind.is_dir() && !kind.is_symlink() {
+                queue.push_back((path, depth + 1));
+            }
+        }
+    }
+    scored.sort_by(|left, right| {
+        right.1.cmp(&left.1)
+            .then_with(|| left.0.components().count().cmp(&right.0.components().count()))
+            .then_with(|| left.0.cmp(&right.0))
+    });
+    scored.into_iter().take(limit.clamp(1, 12))
+        .map(|(path, _)| path.to_string_lossy().into_owned())
+        .collect()
+}
+
+#[tauri::command]
+async fn search_folders(query: String, roots: Vec<String>, limit: usize) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || discover_matching_folders(&query, &roots, limit))
+        .await
+        .map_err(|error| error.to_string())
 }
 
 fn asset_score(name: &str) -> Option<u8> {
@@ -247,6 +348,7 @@ pub fn run() {
             confirm_suggestion,
             rebuild_index,
             engine_doctor,
+            search_folders,
             check_for_update,
         ])
         .on_window_event(|window, event| {
@@ -269,7 +371,8 @@ fn show_main_window(app: &AppHandle) {
 
 #[cfg(test)]
 mod tests {
-    use super::is_newer_release;
+    use super::{is_newer_release, path_match_score};
+    use std::path::Path;
     use semver::Version;
 
     #[test]
@@ -290,5 +393,13 @@ mod tests {
             &Version::parse("1.2.0").unwrap(),
             &Version::parse("1.2.0-preview.5").unwrap()
         ));
+    }
+
+    #[test]
+    fn path_search_includes_descendants_of_matching_parent() {
+        let parent = Path::new("/Users/test/Desktop/adv_econ");
+        let child = Path::new("/Users/test/Desktop/adv_econ/industrial organization");
+        assert_eq!(path_match_score("adv_econ", parent), Some(120));
+        assert!(path_match_score("adv_econ", child).unwrap() >= 90);
     }
 }

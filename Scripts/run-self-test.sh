@@ -14,6 +14,7 @@ swiftc \
   Sources/SavePilot/ContentExtractor.swift \
   Sources/SavePilot/EvidenceRanker.swift \
   Sources/SavePilot/FolderKnowledgeIndex.swift \
+  Sources/SavePilot/FolderPathAutocomplete.swift \
   Sources/SavePilot/SeriesConsensus.swift \
   Sources/SavePilot/DocumentRelationshipEngine.swift \
   Sources/SavePilot/OllamaEmbeddingRetriever.swift \

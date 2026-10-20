@@ -65,6 +65,8 @@ let doctor: Doctor | null = null;
 let availableUpdate: UpdateInfo | null = null;
 let checkingUpdate = false;
 let scanning = false;
+let folderPathSuggestions: string[] = [];
+let pathSearchTimer: number | undefined;
 const pendingPaths = new Map<string, number>();
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
@@ -264,11 +266,57 @@ function detailView(suggestion?: Suggestion): string {
   if (!suggestion) return `<section class="empty"><div class="empty-icon">✓</div><h2>暂时没有待处理建议</h2><p>SavePilot 会继续在后台关注你选择的文件夹。</p><button class="secondary" id="scan-empty">扫描现有文件</button></section>`;
   return `<section class="detail">
     <header class="file-header"><div><p class="eyebrow">正在审核</p><h2 title="${escapeHtml(suggestion.source)}">${escapeHtml(basename(suggestion.source))}</h2><p title="${escapeHtml(dirname(suggestion.source))}">${escapeHtml(dirname(suggestion.source))}</p></div><span class="confidence">${Math.round(suggestion.confidence * 100)}%</span></header>
-    <div class="card destination-card"><label for="destination">推荐存放位置</label><input id="destination" value="${escapeHtml(suggestion.destination)}" spellcheck="false"><p>${suggestion.creates_folder ? "＋ 将新建文件夹　" : ""}${escapeHtml(suggestion.reason)}</p></div>
+    <div class="card destination-card"><label for="destination">推荐存放位置</label><div class="path-autocomplete"><input id="destination" value="${escapeHtml(suggestion.destination)}" spellcheck="false" autocomplete="off"><div class="path-suggestions" id="path-suggestions"></div></div><p>${suggestion.creates_folder ? "＋ 将新建文件夹　" : ""}${escapeHtml(suggestion.reason)}</p></div>
     <div class="card"><label for="filename">文件名</label><input id="filename" value="${escapeHtml(suggestion.proposed_file_name)}" spellcheck="false"><p>${suggestion.changes_name ? `建议从“${escapeHtml(basename(suggestion.source))}”重命名` : "文件名清晰，无需额外判断"}</p></div>
     <div class="card"><label>识别到的内容</label><p class="summary">${escapeHtml(suggestion.summary || "没有可显示的摘要")}</p><div class="signals">${suggestion.signals.map(signal => `<span>${escapeHtml(signal)}</span>`).join("")}</div></div>
     <footer class="actions"><button class="ghost" id="dismiss">保留原位</button><button class="primary" id="confirm">确认</button></footer>
   </section>`;
+}
+
+function renderPathSuggestions(input?: HTMLInputElement): void {
+  const container = document.querySelector<HTMLDivElement>("#path-suggestions");
+  if (!container) return;
+  container.innerHTML = folderPathSuggestions
+    .filter(path => path !== input?.value)
+    .map(path => `<button type="button" data-path-suggestion="${escapeHtml(path)}"><span>▱</span><strong>${escapeHtml(path)}</strong></button>`)
+    .join("");
+  container.querySelectorAll<HTMLButtonElement>("[data-path-suggestion]").forEach(button => {
+    button.addEventListener("mousedown", event => event.preventDefault());
+    button.addEventListener("click", () => {
+      const destination = document.querySelector<HTMLInputElement>("#destination");
+      if (destination) destination.value = button.dataset.pathSuggestion ?? destination.value;
+      folderPathSuggestions = [];
+      renderPathSuggestions(destination ?? undefined);
+    });
+  });
+}
+
+function bindPathAutocomplete(): void {
+  const input = document.querySelector<HTMLInputElement>("#destination");
+  if (!input) return;
+  input.addEventListener("input", () => {
+    if (pathSearchTimer !== undefined) window.clearTimeout(pathSearchTimer);
+    const query = input.value.trim();
+    if (query.length < 2) {
+      folderPathSuggestions = [];
+      renderPathSuggestions(input);
+      return;
+    }
+    pathSearchTimer = window.setTimeout(async () => {
+      const roots = [...new Set([...settings.roots, ...settings.watched])];
+      folderPathSuggestions = inTauri
+        ? await invoke<string[]>("search_folders", { query, roots, limit: 8 }).catch(() => [])
+        : [];
+      if (document.querySelector<HTMLInputElement>("#destination")?.value.trim() === query) {
+        renderPathSuggestions(input);
+      }
+    }, 180);
+  });
+  input.addEventListener("focus", () => renderPathSuggestions(input));
+  input.addEventListener("blur", () => window.setTimeout(() => {
+    folderPathSuggestions = [];
+    renderPathSuggestions(input);
+  }, 120));
 }
 
 function appView(): string {
@@ -316,6 +364,7 @@ function render(): void {
   document.querySelector("#scan")?.addEventListener("click", () => void scanExisting());
   document.querySelector("#scan-empty")?.addEventListener("click", () => void scanExisting());
   document.querySelector("#confirm")?.addEventListener("click", () => void confirmSelected());
+  bindPathAutocomplete();
   document.querySelector("#dismiss")?.addEventListener("click", dismissSelected);
   document.querySelector("#refresh-doctor")?.addEventListener("click", () => void refreshDoctor());
   document.querySelector("#show-update")?.addEventListener("click", () => (document.querySelector("#update-dialog") as HTMLDialogElement)?.showModal());

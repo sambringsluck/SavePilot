@@ -270,6 +270,7 @@ private struct SuggestionDetail: View {
     let suggestion: FileSuggestion
     @State private var editedPath: String
     @State private var editedFileName: String
+    @FocusState private var pathFieldFocused: Bool
 
     init(suggestion: FileSuggestion) {
         self.suggestion = suggestion
@@ -337,7 +338,35 @@ private struct SuggestionDetail: View {
                         TextField("~/Documents/目标文件夹", text: $editedPath)
                             .textFieldStyle(.roundedBorder)
                             .font(.system(.body, design: .monospaced))
+                            .focused($pathFieldFocused)
                             .onSubmit { confirmCurrentChoice() }
+                        if pathFieldFocused, !pathSuggestions.isEmpty {
+                            VStack(spacing: 0) {
+                                ForEach(pathSuggestions, id: \.self) { path in
+                                    Button {
+                                        editedPath = path
+                                        pathFieldFocused = false
+                                    } label: {
+                                        HStack(spacing: 9) {
+                                            Image(systemName: "folder")
+                                                .foregroundStyle(.blue)
+                                            Text(path)
+                                                .font(.system(.caption, design: .monospaced))
+                                                .lineLimit(1)
+                                                .truncationMode(.middle)
+                                            Spacer(minLength: 0)
+                                        }
+                                        .contentShape(Rectangle())
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 8)
+                                    }
+                                    .buttonStyle(.plain)
+                                    if path != pathSuggestions.last { Divider() }
+                                }
+                            }
+                            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(.quaternary))
+                        }
                         HStack {
                             Label(
                                 editedFolderExists ? "目录已存在" : "目录不存在，确认后新建",
@@ -410,6 +439,11 @@ private struct SuggestionDetail: View {
 
     private var expandedEditedPath: String {
         (editedPath.trimmingCharacters(in: .whitespacesAndNewlines) as NSString).expandingTildeInPath
+    }
+
+    private var pathSuggestions: [String] {
+        model.pathSuggestions(for: editedPath)
+            .filter { $0 != expandedEditedPath }
     }
 
     private var editedPathIsValid: Bool {

@@ -48,6 +48,7 @@ final class AppModel: ObservableObject {
     @Published var availableUpdate: AppUpdateInfo?
     @Published var updateCheckStatus = ""
     @Published var updateCheckRunning = false
+    @Published private(set) var knownFolderPaths: [String] = []
 
     private var monitor: FolderMonitor?
     private var savePanelObserver: SavePanelObserver?
@@ -64,6 +65,7 @@ final class AppModel: ObservableObject {
 
     init() {
         loadSettings()
+        refreshPathAutocompleteIndex()
         showWelcome = !defaults.bool(forKey: "didCompleteWelcome")
         learningSummary = learningStore.summary
         userProfileSummary = userProfileStore.snapshot.summary
@@ -98,6 +100,10 @@ final class AppModel: ObservableObject {
     }
 
     var pendingCount: Int { suggestions.count }
+
+    func pathSuggestions(for query: String, limit: Int = 8) -> [String] {
+        FolderPathAutocomplete.matches(query: query, candidates: knownFolderPaths, limit: limit)
+    }
 
     func checkForUpdates(manual: Bool = false) async {
         guard !updateCheckRunning else { return }
@@ -135,6 +141,7 @@ final class AppModel: ObservableObject {
         watchedFolders.append(WatchedFolder(path: url.path))
         persistSettings()
         restartMonitoring()
+        refreshPathAutocompleteIndex()
     }
 
     func addDestinationRoot() {
@@ -142,6 +149,7 @@ final class AppModel: ObservableObject {
         guard !destinationRoots.contains(where: { $0.path == url.path }) else { return }
         destinationRoots.append(DestinationRoot(path: url.path))
         persistSettings()
+        refreshPathAutocompleteIndex()
     }
 
     func enableWholeHomeMonitoring() {
@@ -149,6 +157,7 @@ final class AppModel: ObservableObject {
         watchedFolders = [WatchedFolder(path: home.path)]
         persistSettings()
         restartMonitoring()
+        refreshPathAutocompleteIndex()
     }
 
     func setLaunchAtLogin(_ enabled: Bool) {
@@ -221,12 +230,14 @@ final class AppModel: ObservableObject {
         watchedFolders.removeAll { $0 == folder }
         persistSettings()
         restartMonitoring()
+        refreshPathAutocompleteIndex()
     }
 
     func removeDestinationRoot(_ root: DestinationRoot) {
         guard destinationRoots.count > 1 else { return }
         destinationRoots.removeAll { $0 == root }
         persistSettings()
+        refreshPathAutocompleteIndex()
     }
 
     func analyzeExistingFiles(limit: Int = 100) {
@@ -1365,6 +1376,22 @@ final class AppModel: ObservableObject {
             ? "父子目录关系未发现明显冲突"
             : "发现 \(hierarchyConflicts.count) 个父子目录主题冲突，已阻止继续向错位子目录推荐"
         folderKnowledgeStatus = "本地内容 RAG 已就绪：\(profiles.count) 个文件夹、\(samples) 个抽样文件；\(adaptive) 个混合主题目录已自动扩大抽样；\(hierarchyNote)。"
+        refreshPathAutocompleteIndex()
+    }
+
+    private func refreshPathAutocompleteIndex() {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let standardFolders = ["Desktop", "Documents", "Downloads"].map {
+            home.appendingPathComponent($0, isDirectory: true)
+        }
+        let roots = effectiveDestinationURLs() + watchedFolders.map(\.url) + standardFolders
+        let known = folderKnowledgeProfiles.map(\.path)
+        Task { @MainActor [weak self] in
+            let paths = await Task.detached(priority: .utility) {
+                FolderPathAutocomplete.discover(roots: roots, knownPaths: known)
+            }.value
+            self?.knownFolderPaths = paths
+        }
     }
 
     private func updateKnowledgeProfile(for folder: URL) async {

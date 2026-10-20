@@ -40,7 +40,8 @@ struct SavePilotSelfTest {
         try testReleaseUpdateOrdering()
         try testStandaloneIEOProjectRouting()
         try testGeneralEvidenceArbitration()
-        print("SavePilot self-test: 33/33 passed")
+        try testFolderPathAutocomplete()
+        print("SavePilot self-test: 34/34 passed")
     }
 
     private static func testExistingFolderSuggestion() throws {
@@ -992,6 +993,33 @@ struct SavePilotSelfTest {
         guard !engine.acceptsPersonalMemory(weakWrongMemory, academicMatch: economics),
               engine.acceptsPersonalMemory(weakCompatibleMemory, academicMatch: economics)
         else { throw SelfTestError.failed("general memory/content arbitration") }
+    }
+
+    private static func testFolderPathAutocomplete() throws {
+        let candidates = [
+            "/Users/test/Desktop/adv_econ",
+            "/Users/test/Desktop/adv_econ/industrial organization",
+            "/Users/test/Documents/经济学",
+            "/Users/test/Documents/物理"
+        ]
+        let matches = FolderPathAutocomplete.matches(query: "adv_econ", candidates: candidates)
+        guard matches == Array(candidates.prefix(2)) else {
+            throw SelfTestError.failed("folder path autocomplete includes matching descendants")
+        }
+
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let nested = root
+            .appendingPathComponent("adv_econ", isDirectory: true)
+            .appendingPathComponent("industrial organization", isDirectory: true)
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        let discovered = FolderPathAutocomplete.discover(roots: [root], maximumDirectories: 20)
+        let discoveredMatches = FolderPathAutocomplete.matches(
+            query: "adv_econ", candidates: discovered
+        )
+        guard discoveredMatches.contains(nested.path) else {
+            throw SelfTestError.failed("folder path autocomplete discovers empty nested folders")
+        }
     }
 
     private static func temporaryDirectory() throws -> URL {
