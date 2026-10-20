@@ -932,7 +932,11 @@ struct SavePilotSelfTest {
     private static func testReleaseUpdateOrdering() throws {
         guard UpdateChecker.isNewer(candidate: "v1.2.0-preview.4", than: "v1.2.0-preview.3"),
               !UpdateChecker.isNewer(candidate: "v1.2.0-preview.4", than: "v1.2.0-preview.4"),
-              UpdateChecker.isNewer(candidate: "v1.2.0-preview.4", than: "v1.2.0")
+              UpdateChecker.isNewer(candidate: "v1.2.0-preview.4", than: "v1.2.0"),
+              UpdateChecker.latestFromAtomDocument(
+                  "<entry><link href=\"https://github.com/sambringsluck/SavePilot/releases/tag/v1.2.0-preview.8\"/></entry>",
+                  currentTag: "v1.2.0-preview.7"
+              )?.version == "1.2.0-preview.8"
         else { throw SelfTestError.failed("release update ordering") }
     }
 

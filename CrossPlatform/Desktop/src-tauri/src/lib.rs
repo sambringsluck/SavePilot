@@ -14,9 +14,10 @@ use tauri::{
 use tauri_plugin_shell::ShellExt;
 
 const RELEASES_API: &str = "https://api.github.com/repos/sambringsluck/SavePilot/releases?per_page=12";
+const RELEASES_ATOM: &str = "https://github.com/sambringsluck/SavePilot/releases.atom";
 // Installer ecosystems impose stricter package-version syntax than GitHub
 // prerelease tags. Keep update identity independent from MSI/RPM metadata.
-const CURRENT_RELEASE_VERSION: &str = "1.2.0-preview.7";
+const CURRENT_RELEASE_VERSION: &str = "1.2.0-preview.8";
 
 #[derive(Deserialize)]
 struct ReleaseAsset {
@@ -247,6 +248,42 @@ fn is_newer_release(current: &Version, candidate: &Version) -> bool {
             && !candidate.pre.is_empty())
 }
 
+fn update_from_atom(current: &Version, atom: &str) -> Option<UpdateInfo> {
+    let marker = "/releases/tag/";
+    let latest = atom.match_indices(marker)
+        .filter_map(|(index, _)| {
+            let rest = &atom[index + marker.len()..];
+            let tag = rest.split(|character: char| {
+                character == '"' || character == '<' || character == '&'
+            }).next()?.trim();
+            let version = Version::parse(tag.trim_start_matches('v')).ok()?;
+            is_newer_release(current, &version).then_some((version, tag.to_owned()))
+        })
+        .max_by(|left, right| left.0.cmp(&right.0));
+    let (version, tag) = latest?;
+    let release_url = format!("https://github.com/sambringsluck/SavePilot/releases/tag/{tag}");
+    let package_version = version.pre.as_str().strip_prefix("preview.")
+        .map(|preview| format!("{}.{}.{}", version.major, version.minor, preview))
+        .unwrap_or_else(|| version.to_string());
+    let asset_name = match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("windows", "x86_64") => Some(format!("SavePilot_{package_version}_x64-setup.exe")),
+        ("macos", "aarch64") => Some(format!("SavePilot_{package_version}_aarch64.dmg")),
+        ("linux", "x86_64") => Some(format!("SavePilot_{package_version}_amd64.AppImage")),
+        _ => None,
+    };
+    let download_url = asset_name
+        .map(|name| format!("https://github.com/sambringsluck/SavePilot/releases/download/{tag}/{name}"))
+        .unwrap_or_else(|| release_url.clone());
+    Some(UpdateInfo {
+        current_version: current.to_string(),
+        version: version.to_string(),
+        title: format!("SavePilot {tag}"),
+        notes: "包含最新的功能改进和问题修复。".into(),
+        download_url,
+        release_url,
+    })
+}
+
 #[tauri::command]
 async fn check_for_update() -> Result<Option<UpdateInfo>, String> {
     let current = Version::parse(CURRENT_RELEASE_VERSION).map_err(|error| error.to_string())?;
@@ -255,6 +292,17 @@ async fn check_for_update() -> Result<Option<UpdateInfo>, String> {
         .user_agent(format!("SavePilot/{}", current))
         .build()
         .map_err(|error| error.to_string())?;
+    // Prefer the public Atom feed. Unlike unauthenticated REST requests it is
+    // not subject to GitHub's low shared API rate limit.
+    if let Ok(response) = client.get(RELEASES_ATOM).send().await {
+        if response.status().is_success() {
+            if let Ok(atom) = response.text().await {
+                if atom.contains("<feed") {
+                    return Ok(update_from_atom(&current, &atom));
+                }
+            }
+        }
+    }
     let releases = client
         .get(RELEASES_API)
         .send()
@@ -371,7 +419,7 @@ fn show_main_window(app: &AppHandle) {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_newer_release, path_match_score};
+    use super::{is_newer_release, path_match_score, update_from_atom};
     use std::path::Path;
     use semver::Version;
 
@@ -401,5 +449,12 @@ mod tests {
         let child = Path::new("/Users/test/Desktop/adv_econ/industrial organization");
         assert_eq!(path_match_score("adv_econ", parent), Some(120));
         assert!(path_match_score("adv_econ", child).unwrap() >= 90);
+    }
+
+    #[test]
+    fn atom_update_check_does_not_depend_on_api_quota() {
+        let atom = r#"<feed><entry><link href="https://github.com/sambringsluck/SavePilot/releases/tag/v1.2.0-preview.8"/></entry></feed>"#;
+        let update = update_from_atom(&Version::parse("1.2.0-preview.7").unwrap(), atom).unwrap();
+        assert_eq!(update.version, "1.2.0-preview.8");
     }
 }

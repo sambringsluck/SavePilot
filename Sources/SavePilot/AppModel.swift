@@ -116,7 +116,7 @@ final class AppModel: ObservableObject {
                 updateCheckStatus = availableUpdate == nil ? "当前已经是最新版本" : "发现新版本 \(availableUpdate!.version)"
             }
         } catch {
-            if manual { updateCheckStatus = "暂时无法检查更新，请稍后重试" }
+            if manual { updateCheckStatus = "更新检查失败：\(error.localizedDescription)" }
         }
     }
 
