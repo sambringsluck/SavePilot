@@ -1024,6 +1024,16 @@ struct SavePilotSelfTest {
         guard discoveredMatches.contains(nested.path) else {
             throw SelfTestError.failed("folder path autocomplete discovers empty nested folders")
         }
+
+        let largeCandidates = (0..<12_000).map {
+            "/Users/test/Documents/course-\($0 / 40)/topic-\($0)"
+        } + ["/Users/test/Desktop/adv_econ/industrial organization"]
+        let index = FolderPathAutocomplete.Index(paths: largeCandidates)
+        for _ in 0..<20 {
+            guard index.matches(query: "adv_econ").first == largeCandidates.last else {
+                throw SelfTestError.failed("cached folder path index remains accurate at scale")
+            }
+        }
     }
 
     private static func temporaryDirectory() throws -> URL {

@@ -62,6 +62,7 @@ final class AppModel: ObservableObject {
     private var recentContentByPath: [String: ExtractedContent] = [:]
     private var hasStartedInitialAnalysis = false
     private var relationshipScanTask: Task<Void, Never>?
+    private var folderPathSearchIndex = FolderPathAutocomplete.Index(paths: [])
 
     init() {
         loadSettings()
@@ -102,7 +103,7 @@ final class AppModel: ObservableObject {
     var pendingCount: Int { suggestions.count }
 
     func pathSuggestions(for query: String, limit: Int = 8) -> [String] {
-        FolderPathAutocomplete.matches(query: query, candidates: knownFolderPaths, limit: limit)
+        folderPathSearchIndex.matches(query: query, limit: limit)
     }
 
     func checkForUpdates(manual: Bool = false) async {
@@ -1391,6 +1392,7 @@ final class AppModel: ObservableObject {
                 FolderPathAutocomplete.discover(roots: roots, knownPaths: known)
             }.value
             self?.knownFolderPaths = paths
+            self?.folderPathSearchIndex = FolderPathAutocomplete.Index(paths: paths)
         }
     }
 

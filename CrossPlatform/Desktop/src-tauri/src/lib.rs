@@ -4,7 +4,8 @@ use serde_json::Value;
 use std::{
     collections::{HashSet, VecDeque},
     fs,
-    path::{Path, PathBuf},
+    path::PathBuf,
+    sync::{Mutex, OnceLock},
 };
 use tauri::{
     menu::{Menu, MenuItem},
@@ -17,7 +18,7 @@ const RELEASES_API: &str = "https://api.github.com/repos/sambringsluck/SavePilot
 const RELEASES_ATOM: &str = "https://github.com/sambringsluck/SavePilot/releases.atom";
 // Installer ecosystems impose stricter package-version syntax than GitHub
 // prerelease tags. Keep update identity independent from MSI/RPM metadata.
-const CURRENT_RELEASE_VERSION: &str = "1.2.0-preview.8";
+const CURRENT_RELEASE_VERSION: &str = "1.2.0-preview.9";
 
 #[derive(Deserialize)]
 struct ReleaseAsset {
@@ -131,40 +132,72 @@ fn normalized_path_term(value: &str) -> String {
         .join(" ")
 }
 
-fn path_match_score(query: &str, path: &Path) -> Option<i32> {
-    let query = normalized_path_term(query);
-    if query.len() < 2 {
-        return None;
-    }
-    let full = path.to_string_lossy();
-    let full_key = normalized_path_term(&full);
-    let leaf_key = path
-        .file_name()
-        .map(|value| normalized_path_term(&value.to_string_lossy()))
-        .unwrap_or_default();
-    let components: Vec<String> = path
-        .components()
-        .map(|value| normalized_path_term(&value.as_os_str().to_string_lossy()))
-        .collect();
-    if full_key == query || leaf_key == query {
-        Some(120)
-    } else if leaf_key.starts_with(&query) {
-        Some(108)
-    } else if leaf_key.contains(&query) {
-        Some(98)
-    } else if let Some(index) = components.iter().rposition(|value| value == &query) {
-        let descendants = components.len().saturating_sub(index + 1) as i32;
-        Some(94 - (descendants * 3).min(18))
-    } else if full_key.contains(&query) {
-        Some(82)
-    } else {
-        let tokens: HashSet<&str> = full_key.split_whitespace().collect();
-        let query_tokens: Vec<&str> = query.split_whitespace().collect();
-        query_tokens.iter().all(|value| tokens.contains(value)).then_some(70)
+#[derive(Clone)]
+struct FolderPathEntry {
+    path: String,
+    full_key: String,
+    leaf_key: String,
+    components: Vec<String>,
+    tokens: HashSet<String>,
+    depth: usize,
+}
+
+impl FolderPathEntry {
+    fn new(path: PathBuf) -> Self {
+        let display_path = path.to_string_lossy().into_owned();
+        let full_key = normalized_path_term(&display_path);
+        Self {
+            path: display_path,
+            leaf_key: path
+                .file_name()
+                .map(|value| normalized_path_term(&value.to_string_lossy()))
+                .unwrap_or_default(),
+            components: path
+                .components()
+                .map(|value| normalized_path_term(&value.as_os_str().to_string_lossy()))
+                .collect(),
+            tokens: full_key.split_whitespace().map(str::to_owned).collect(),
+            depth: path.components().count(),
+            full_key,
+        }
     }
 }
 
-fn discover_matching_folders(query: &str, roots: &[String], limit: usize) -> Vec<String> {
+#[derive(Default)]
+struct FolderPathCache {
+    roots: Vec<String>,
+    entries: Vec<FolderPathEntry>,
+}
+
+static FOLDER_PATH_CACHE: OnceLock<Mutex<FolderPathCache>> = OnceLock::new();
+
+fn path_match_score(query: &str, entry: &FolderPathEntry) -> Option<i32> {
+    if entry.full_key == query || entry.leaf_key == query {
+        Some(120)
+    } else if entry.leaf_key.starts_with(query) {
+        Some(108)
+    } else if entry.leaf_key.contains(query) {
+        Some(98)
+    } else if let Some(index) = entry.components.iter().rposition(|value| value == query) {
+        let descendants = entry.components.len().saturating_sub(index + 1) as i32;
+        Some(94 - (descendants * 3).min(18))
+    } else if entry.full_key.contains(query) {
+        Some(82)
+    } else {
+        query
+            .split_whitespace()
+            .all(|value| entry.tokens.contains(value))
+            .then_some(70)
+    }
+}
+
+fn normalized_roots(mut roots: Vec<String>) -> Vec<String> {
+    roots.sort();
+    roots.dedup();
+    roots
+}
+
+fn discover_folders(roots: &[String]) -> Vec<FolderPathEntry> {
     let excluded: HashSet<&str> = [
         ".git", ".build", "node_modules", "Library", "Applications", "Pods",
         "DerivedData", "Caches", "Cache",
@@ -176,13 +209,9 @@ fn discover_matching_folders(query: &str, roots: &[String], limit: usize) -> Vec
         .iter()
         .map(|value| (PathBuf::from(value), 0))
         .collect();
-    let mut scored = Vec::new();
     while let Some((folder, depth)) = queue.pop_front() {
         if visited.len() >= 8_000 || !visited.insert(folder.clone()) {
             continue;
-        }
-        if let Some(score) = path_match_score(query, &folder) {
-            scored.push((folder.clone(), score));
         }
         if depth >= 7 {
             continue;
@@ -200,19 +229,64 @@ fn discover_matching_folders(query: &str, roots: &[String], limit: usize) -> Vec
             }
         }
     }
+    let mut entries: Vec<_> = visited.into_iter().map(FolderPathEntry::new).collect();
+    entries.sort_by(|left, right| left.path.cmp(&right.path));
+    entries
+}
+
+fn ensure_folder_index(roots: Vec<String>, refresh: bool) -> usize {
+    let roots = normalized_roots(roots);
+    let cache = FOLDER_PATH_CACHE.get_or_init(|| Mutex::new(FolderPathCache::default()));
+    {
+        let current = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !refresh && current.roots == roots && !current.entries.is_empty() {
+            return current.entries.len();
+        }
+    }
+
+    // Filesystem traversal happens only when the configured roots change (or on
+    // explicit warm-up), never for each character typed in the destination field.
+    let entries = discover_folders(&roots);
+    let mut current = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    current.roots = roots;
+    current.entries = entries;
+    current.entries.len()
+}
+
+fn rank_folder_entries(query: &str, entries: &[FolderPathEntry], limit: usize) -> Vec<String> {
+    let query = normalized_path_term(query);
+    if query.len() < 2 {
+        return Vec::new();
+    }
+    let mut scored: Vec<_> = entries
+        .iter()
+        .filter_map(|entry| path_match_score(&query, entry).map(|score| (entry, score)))
+        .collect();
     scored.sort_by(|left, right| {
         right.1.cmp(&left.1)
-            .then_with(|| left.0.components().count().cmp(&right.0.components().count()))
-            .then_with(|| left.0.cmp(&right.0))
+            .then_with(|| left.0.depth.cmp(&right.0.depth))
+            .then_with(|| left.0.path.cmp(&right.0.path))
     });
     scored.into_iter().take(limit.clamp(1, 12))
-        .map(|(path, _)| path.to_string_lossy().into_owned())
+        .map(|(entry, _)| entry.path.clone())
         .collect()
 }
 
 #[tauri::command]
+async fn warm_folder_index(roots: Vec<String>) -> Result<usize, String> {
+    tauri::async_runtime::spawn_blocking(move || ensure_folder_index(roots, true))
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn search_folders(query: String, roots: Vec<String>, limit: usize) -> Result<Vec<String>, String> {
-    tauri::async_runtime::spawn_blocking(move || discover_matching_folders(&query, &roots, limit))
+    tauri::async_runtime::spawn_blocking(move || {
+        ensure_folder_index(roots, false);
+        let cache = FOLDER_PATH_CACHE.get_or_init(|| Mutex::new(FolderPathCache::default()));
+        let current = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        rank_folder_entries(&query, &current.entries, limit)
+    })
         .await
         .map_err(|error| error.to_string())
 }
@@ -396,6 +470,7 @@ pub fn run() {
             confirm_suggestion,
             rebuild_index,
             engine_doctor,
+            warm_folder_index,
             search_folders,
             check_for_update,
         ])
@@ -419,8 +494,8 @@ fn show_main_window(app: &AppHandle) {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_newer_release, path_match_score, update_from_atom};
-    use std::path::Path;
+    use super::{is_newer_release, path_match_score, update_from_atom, FolderPathEntry};
+    use std::path::PathBuf;
     use semver::Version;
 
     #[test]
@@ -445,10 +520,12 @@ mod tests {
 
     #[test]
     fn path_search_includes_descendants_of_matching_parent() {
-        let parent = Path::new("/Users/test/Desktop/adv_econ");
-        let child = Path::new("/Users/test/Desktop/adv_econ/industrial organization");
-        assert_eq!(path_match_score("adv_econ", parent), Some(120));
-        assert!(path_match_score("adv_econ", child).unwrap() >= 90);
+        let parent = FolderPathEntry::new(PathBuf::from("/Users/test/Desktop/adv_econ"));
+        let child = FolderPathEntry::new(PathBuf::from(
+            "/Users/test/Desktop/adv_econ/industrial organization",
+        ));
+        assert_eq!(path_match_score("adv econ", &parent), Some(120));
+        assert!(path_match_score("adv econ", &child).unwrap() >= 90);
     }
 
     #[test]

@@ -67,6 +67,7 @@ let checkingUpdate = false;
 let scanning = false;
 let folderPathSuggestions: string[] = [];
 let pathSearchTimer: number | undefined;
+let pathSearchSequence = 0;
 const pendingPaths = new Map<string, number>();
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
@@ -92,6 +93,12 @@ async function saveSettings(): Promise<void> {
   await store.save();
 }
 
+async function warmFolderPathIndex(): Promise<void> {
+  if (!inTauri) return;
+  const roots = [...new Set([...settings.roots, ...settings.watched])];
+  await invoke<number>("warm_folder_index", { roots }).catch(() => 0);
+}
+
 async function chooseFolder(target: "watch" | "root"): Promise<void> {
   const selected = inTauri
     ? await open({ directory: true, multiple: false, title: target === "watch" ? "选择监听文件夹" : "选择归档根目录" })
@@ -101,6 +108,7 @@ async function chooseFolder(target: "watch" | "root"): Promise<void> {
   if (!list.includes(selected)) list.push(selected);
   await saveSettings();
   render();
+  void warmFolderPathIndex();
 }
 
 async function completeWelcome(): Promise<void> {
@@ -109,6 +117,7 @@ async function completeWelcome(): Promise<void> {
   await saveSettings();
   await startWatchers();
   render();
+  void warmFolderPathIndex();
   await scanExisting();
 }
 
@@ -173,6 +182,7 @@ async function rebuildIndex(): Promise<void> {
   render();
   try {
     const result = await invoke<{ folders: number }>("rebuild_index", { roots: settings.roots });
+    await warmFolderPathIndex();
     alert(`已更新 ${result.folders} 个文件夹主题`);
   } finally {
     scanning = false;
@@ -296,6 +306,7 @@ function bindPathAutocomplete(): void {
   if (!input) return;
   input.addEventListener("input", () => {
     if (pathSearchTimer !== undefined) window.clearTimeout(pathSearchTimer);
+    const searchSequence = ++pathSearchSequence;
     const query = input.value.trim();
     if (query.length < 2) {
       folderPathSuggestions = [];
@@ -304,13 +315,15 @@ function bindPathAutocomplete(): void {
     }
     pathSearchTimer = window.setTimeout(async () => {
       const roots = [...new Set([...settings.roots, ...settings.watched])];
-      folderPathSuggestions = inTauri
+      const results = inTauri
         ? await invoke<string[]>("search_folders", { query, roots, limit: 8 }).catch(() => [])
         : [];
-      if (document.querySelector<HTMLInputElement>("#destination")?.value.trim() === query) {
+      if (searchSequence === pathSearchSequence
+          && document.querySelector<HTMLInputElement>("#destination")?.value.trim() === query) {
+        folderPathSuggestions = results;
         renderPathSuggestions(input);
       }
-    }, 180);
+    }, 260);
   });
   input.addEventListener("focus", () => renderPathSuggestions(input));
   input.addEventListener("blur", () => window.setTimeout(() => {
@@ -347,10 +360,12 @@ function bindCommon(): void {
   document.querySelectorAll<HTMLElement>("[data-remove-watch]").forEach(button => button.addEventListener("click", async () => {
     settings.watched = settings.watched.filter(path => path !== button.dataset.removeWatch);
     await saveSettings(); await startWatchers(); render();
+    void warmFolderPathIndex();
   }));
   document.querySelectorAll<HTMLElement>("[data-remove-root]").forEach(button => button.addEventListener("click", async () => {
     settings.roots = settings.roots.filter(path => path !== button.dataset.removeRoot);
     await saveSettings(); render();
+    void warmFolderPathIndex();
   }));
 }
 
@@ -387,6 +402,7 @@ if (inTauri) settings.launchAtLogin = await isEnabled().catch(() => settings.lau
 render();
 if (settings.completedWelcome) {
   await startWatchers();
+  void warmFolderPathIndex();
   void refreshDoctor();
 }
 if (inTauri) void checkForUpdate();

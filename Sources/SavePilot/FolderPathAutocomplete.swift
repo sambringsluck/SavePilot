@@ -1,6 +1,70 @@
 import Foundation
 
 enum FolderPathAutocomplete {
+    struct Index: Sendable {
+        private struct Entry: Sendable {
+            let path: String
+            let pathKey: String
+            let leafKey: String
+            let componentKeys: [String]
+            let tokens: Set<String>
+            let depth: Int
+        }
+
+        private let entries: [Entry]
+
+        init(paths: [String]) {
+            entries = paths.map { path in
+                let url = URL(fileURLWithPath: path, isDirectory: true)
+                let pathKey = normalized(path)
+                return Entry(
+                    path: path,
+                    pathKey: pathKey,
+                    leafKey: normalized(url.lastPathComponent),
+                    componentKeys: url.pathComponents.map(normalized),
+                    tokens: Set(pathKey.split(separator: " ").map(String.init)),
+                    depth: url.pathComponents.count
+                )
+            }
+        }
+
+        func matches(query: String, limit: Int = 8) -> [String] {
+            let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.count >= 2 else { return [] }
+            let expanded = (trimmed as NSString).expandingTildeInPath
+            let queryKey = normalized(expanded)
+            let queryTokens = Set(queryKey.split(separator: " ").map(String.init))
+            return entries.compactMap { entry -> (Entry, Int)? in
+                let score: Int
+                if entry.path == expanded || entry.leafKey == queryKey {
+                    score = 120
+                } else if entry.leafKey.hasPrefix(queryKey) {
+                    score = 108
+                } else if entry.leafKey.contains(queryKey) {
+                    score = 98
+                } else if let componentIndex = entry.componentKeys.lastIndex(of: queryKey) {
+                    let descendants = entry.componentKeys.distance(
+                        from: componentIndex, to: entry.componentKeys.endIndex
+                    ) - 1
+                    score = 94 - min(18, descendants * 3)
+                } else if entry.pathKey.hasPrefix(queryKey) || entry.pathKey.contains("/" + queryKey) {
+                    score = 82
+                } else {
+                    guard !queryTokens.isEmpty, queryTokens.isSubset(of: entry.tokens) else { return nil }
+                    score = 70
+                }
+                return (entry, score)
+            }
+            .sorted {
+                if $0.1 != $1.1 { return $0.1 > $1.1 }
+                if $0.0.depth != $1.0.depth { return $0.0.depth < $1.0.depth }
+                return $0.0.path.localizedStandardCompare($1.0.path) == .orderedAscending
+            }
+            .prefix(limit)
+            .map(\.0.path)
+        }
+    }
+
     static func discover(
         roots: [URL],
         knownPaths: [String] = [],
@@ -55,48 +119,10 @@ enum FolderPathAutocomplete {
     }
 
     static func matches(query: String, candidates: [String], limit: Int = 8) -> [String] {
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.count >= 2 else { return [] }
-        let expanded = (trimmed as NSString).expandingTildeInPath
-        let queryKey = normalized(expanded)
-        let queryTokens = Set(queryKey.split(separator: " ").map(String.init))
-
-        return candidates.compactMap { path -> (String, Int)? in
-            let url = URL(fileURLWithPath: path, isDirectory: true)
-            let pathKey = normalized(path)
-            let leafKey = normalized(url.lastPathComponent)
-            let componentKeys = url.pathComponents.map(normalized)
-            let score: Int
-            if path == expanded || leafKey == queryKey {
-                score = 120
-            } else if leafKey.hasPrefix(queryKey) {
-                score = 108
-            } else if leafKey.contains(queryKey) {
-                score = 98
-            } else if let componentIndex = componentKeys.lastIndex(of: queryKey) {
-                let descendants = componentKeys.distance(from: componentIndex, to: componentKeys.endIndex) - 1
-                score = 94 - min(18, descendants * 3)
-            } else if pathKey.hasPrefix(queryKey) || pathKey.contains("/" + queryKey) {
-                score = 82
-            } else {
-                let pathTokens = Set(pathKey.split(separator: " ").map(String.init))
-                guard !queryTokens.isEmpty, queryTokens.isSubset(of: pathTokens) else { return nil }
-                score = 70
-            }
-            return (path, score)
-        }
-        .sorted {
-            if $0.1 != $1.1 { return $0.1 > $1.1 }
-            let lhsDepth = URL(fileURLWithPath: $0.0).pathComponents.count
-            let rhsDepth = URL(fileURLWithPath: $1.0).pathComponents.count
-            if lhsDepth != rhsDepth { return lhsDepth < rhsDepth }
-            return $0.0.localizedStandardCompare($1.0) == .orderedAscending
-        }
-        .prefix(limit)
-        .map(\.0)
+        Index(paths: candidates).matches(query: query, limit: limit)
     }
 
-    private static func normalized(_ value: String) -> String {
+    fileprivate static func normalized(_ value: String) -> String {
         value.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
             .replacingOccurrences(of: "[_\\-]+", with: " ", options: .regularExpression)
             .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)

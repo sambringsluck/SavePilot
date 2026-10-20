@@ -270,6 +270,8 @@ private struct SuggestionDetail: View {
     let suggestion: FileSuggestion
     @State private var editedPath: String
     @State private var editedFileName: String
+    @State private var displayedPathSuggestions: [String] = []
+    @State private var pathSearchTask: Task<Void, Never>?
     @FocusState private var pathFieldFocused: Bool
 
     init(suggestion: FileSuggestion) {
@@ -340,11 +342,20 @@ private struct SuggestionDetail: View {
                             .font(.system(.body, design: .monospaced))
                             .focused($pathFieldFocused)
                             .onSubmit { confirmCurrentChoice() }
-                        if pathFieldFocused, !pathSuggestions.isEmpty {
+                            .onChange(of: editedPath) { _, value in schedulePathSearch(value) }
+                            .onChange(of: pathFieldFocused) { _, focused in
+                                if focused { schedulePathSearch(editedPath) }
+                                else {
+                                    pathSearchTask?.cancel()
+                                    displayedPathSuggestions = []
+                                }
+                            }
+                        if pathFieldFocused, !displayedPathSuggestions.isEmpty {
                             VStack(spacing: 0) {
-                                ForEach(pathSuggestions, id: \.self) { path in
+                                ForEach(displayedPathSuggestions, id: \.self) { path in
                                     Button {
                                         editedPath = path
+                                        displayedPathSuggestions = []
                                         pathFieldFocused = false
                                     } label: {
                                         HStack(spacing: 9) {
@@ -361,7 +372,7 @@ private struct SuggestionDetail: View {
                                         .padding(.vertical, 8)
                                     }
                                     .buttonStyle(.plain)
-                                    if path != pathSuggestions.last { Divider() }
+                                    if path != displayedPathSuggestions.last { Divider() }
                                 }
                             }
                             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
@@ -435,15 +446,22 @@ private struct SuggestionDetail: View {
             }
             .padding(28)
         }
+        .onDisappear { pathSearchTask?.cancel() }
     }
 
     private var expandedEditedPath: String {
         (editedPath.trimmingCharacters(in: .whitespacesAndNewlines) as NSString).expandingTildeInPath
     }
 
-    private var pathSuggestions: [String] {
-        model.pathSuggestions(for: editedPath)
-            .filter { $0 != expandedEditedPath }
+    private func schedulePathSearch(_ query: String) {
+        pathSearchTask?.cancel()
+        guard pathFieldFocused else { return }
+        pathSearchTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(180))
+            guard !Task.isCancelled, pathFieldFocused, editedPath == query else { return }
+            displayedPathSuggestions = model.pathSuggestions(for: query)
+                .filter { $0 != expandedEditedPath }
+        }
     }
 
     private var editedPathIsValid: Bool {
