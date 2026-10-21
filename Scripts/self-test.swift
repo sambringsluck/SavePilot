@@ -41,7 +41,8 @@ struct SavePilotSelfTest {
         try testStandaloneIEOProjectRouting()
         try testGeneralEvidenceArbitration()
         try testFolderPathAutocomplete()
-        print("SavePilot self-test: 34/34 passed")
+        try testDeepSeekConnectionPayload()
+        print("SavePilot self-test: 35/35 passed")
     }
 
     private static func testExistingFolderSuggestion() throws {
@@ -1034,6 +1035,16 @@ struct SavePilotSelfTest {
                 throw SelfTestError.failed("cached folder path index remains accurate at scale")
             }
         }
+    }
+
+    private static func testDeepSeekConnectionPayload() throws {
+        let data = try DeepSeekRecommender.connectionTestPayload(model: "deepseek-flash")
+        guard let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              payload["model"] as? String == "deepseek-flash",
+              payload["reasoning_effort"] as? String == "none",
+              (payload["thinking"] as? [String: String])?["type"] == "disabled",
+              (payload["max_tokens"] as? Int ?? 0) >= 80
+        else { throw SelfTestError.failed("DeepSeek connection test disables token-consuming reasoning") }
     }
 
     private static func temporaryDirectory() throws -> URL {

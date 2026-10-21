@@ -7,16 +7,18 @@ enum DeepSeekRecommender {
             let content: String
         }
         struct ResponseFormat: Encodable { let type: String }
+        struct Thinking: Encodable { let type: String }
 
         let model: String
         let messages: [Message]
         let responseFormat: ResponseFormat
         let maxTokens: Int
         let reasoningEffort: String
+        let thinking: Thinking
         let stream = false
 
         enum CodingKeys: String, CodingKey {
-            case model, messages, stream
+            case model, messages, thinking, stream
             case responseFormat = "response_format"
             case maxTokens = "max_tokens"
             case reasoningEffort = "reasoning_effort"
@@ -74,7 +76,8 @@ enum DeepSeekRecommender {
             ],
             responseFormat: .init(type: "json_object"),
             maxTokens: 400,
-            reasoningEffort: "low"
+            reasoningEffort: "none",
+            thinking: .init(type: "disabled")
         )
 
         guard let decision = try? await send(request, apiKey: apiKey, as: Decision.self) else { return nil }
@@ -110,22 +113,30 @@ enum DeepSeekRecommender {
 
     static func test(apiKey: String, model: String) async -> String {
         struct TestReply: Decodable { let status: String }
-        let request = ChatRequest(
+        do {
+            let reply = try await send(connectionTestRequest(model: model), apiKey: apiKey, as: TestReply.self)
+            return reply.status.lowercased() == "ok" ? "DeepSeek 连接成功（\(model)）" : "DeepSeek 返回了非预期结果"
+        } catch {
+            return "DeepSeek 连接失败：\(error.localizedDescription)"
+        }
+    }
+
+    static func connectionTestPayload(model: String) throws -> Data {
+        try JSONEncoder().encode(connectionTestRequest(model: model))
+    }
+
+    private static func connectionTestRequest(model: String) -> ChatRequest {
+        ChatRequest(
             model: model,
             messages: [
                 .init(role: "system", content: "只返回 JSON。"),
                 .init(role: "user", content: "输出 JSON：{\"status\":\"ok\"}")
             ],
             responseFormat: .init(type: "json_object"),
-            maxTokens: 20,
-            reasoningEffort: "low"
+            maxTokens: 80,
+            reasoningEffort: "none",
+            thinking: .init(type: "disabled")
         )
-        do {
-            let reply = try await send(request, apiKey: apiKey, as: TestReply.self)
-            return reply.status.lowercased() == "ok" ? "DeepSeek 连接成功" : "DeepSeek 返回了非预期结果"
-        } catch {
-            return "DeepSeek 连接失败：\(error.localizedDescription)"
-        }
     }
 
     private static func send<T: Decodable>(

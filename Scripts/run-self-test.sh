@@ -24,6 +24,7 @@ swiftc \
   Sources/SavePilot/FileMover.swift \
   Sources/SavePilot/FolderMonitor.swift \
   Sources/SavePilot/UpdateChecker.swift \
+  Sources/SavePilot/DeepSeekRecommender.swift \
   Scripts/self-test.swift \
   -o "$test_binary"
 "$test_binary"

@@ -18,7 +18,7 @@ const RELEASES_API: &str = "https://api.github.com/repos/sambringsluck/SavePilot
 const RELEASES_ATOM: &str = "https://github.com/sambringsluck/SavePilot/releases.atom";
 // Installer ecosystems impose stricter package-version syntax than GitHub
 // prerelease tags. Keep update identity independent from MSI/RPM metadata.
-const CURRENT_RELEASE_VERSION: &str = "1.2.0-preview.9";
+const CURRENT_RELEASE_VERSION: &str = "1.2.0-preview.10";
 
 #[derive(Deserialize)]
 struct ReleaseAsset {
